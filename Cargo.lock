@@ -1232,6 +1232,7 @@ checksum = "0fdc796383b176dd5a45353fbb5e64583c0ee4da12cb62c9e510b785324b2488"
 dependencies = [
  "arrow",
  "cast",
+ "chrono",
  "comfy-table",
  "fallible-iterator",
  "fallible-streaming-iterator",
@@ -2195,12 +2196,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
 name = "marila-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "duckdb",
  "thiserror",
@@ -2225,12 +2228,15 @@ dependencies = [
 name = "marila-storage"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
  "thiserror",
+ "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2246,6 +2252,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 

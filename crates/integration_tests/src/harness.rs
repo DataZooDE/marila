@@ -169,6 +169,17 @@ fn ensure_built() {
 
 fn spawn_marila() -> std::io::Result<MarilaProcess> {
     let bin = marila_binary_path();
+    // Best-effort kill of any stale marila process left behind by a
+    // previous test invocation that crashed before its Drop ran.
+    // pkill is in coreutils on Linux; missing on macOS — we ignore
+    // failures either way and let the bind attempt below surface the
+    // real error if the port is still held.
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", bin.to_string_lossy().as_ref()])
+        .status();
+    // Give the OS a tick to release the port after the kill.
+    std::thread::sleep(Duration::from_millis(150));
+
     let child = Command::new(&bin)
         .env("MARILA_BIND_ADDR", "127.0.0.1:8080")
         .env("MARILA_S3_ENDPOINT", "http://localhost:9000")
@@ -177,8 +188,16 @@ fn spawn_marila() -> std::io::Result<MarilaProcess> {
         .env("MARILA_S3_REGION", REGION)
         .env("MARILA_AWS_ACCOUNT_ID", "000000000000")
         .env("MARILA_STATE_DB", state_db_path())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .env(
+            "RUST_LOG",
+            std::env::var("MARILA_TEST_RUST_LOG").unwrap_or_else(|_| {
+                "info,marila=debug,marila_vectors=debug,tower_http=info".to_owned()
+            }),
+        )
+        // Forward marila's logs to the test harness's stderr so test
+        // failures show what the server actually saw.
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .spawn()?;
 
     wait_for_health(Duration::from_secs(10));

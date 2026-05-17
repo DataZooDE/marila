@@ -1,4 +1,9 @@
-//! Local state for marila: DuckDB-backed.
-//!
-//! Schema and the `StateStore` trait land in the next commit; this file
-//! exists so the workspace links.
+//! Local state for marila — a thin DuckDB-backed schema with a
+//! storage-agnostic `StateStore` trait so handlers depend on the
+//! contract, not on `duckdb` types.
+
+mod duckdb_store;
+mod state;
+
+pub use duckdb_store::DuckDbStateStore;
+pub use state::{StateError, StateStore, VectorBucketRow};

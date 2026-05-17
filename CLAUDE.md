@@ -79,14 +79,14 @@ Content-Type: application/json
 {"vectorBucketArn":"arn:aws:s3vectors:<region>:<account>:bucket/<name>"}
 ```
 
-ListVectorBuckets response:
+ListVectorBuckets **raw** response body:
 ```json
 {
   "vectorBuckets": [
     {
       "vectorBucketName": "...",
       "vectorBucketArn": "arn:aws:s3vectors:eu-west-1:625644349722:bucket/...",
-      "creationTime": "2026-05-17T15:19:26+02:00"
+      "creationTime": 1779025868
     }
   ]
 }
@@ -94,6 +94,26 @@ ListVectorBuckets response:
 
 ARN format: `arn:aws:s3vectors:<region>:<account>:bucket/<bucket-name>`.
 Bucket-name validation: `min 3 / max 63` chars (per CLI help).
+
+### C-2a — Timestamp wire format is **epoch-seconds (JSON number)**
+
+The `aws` CLI pretty-prints `creationTime` as `"2026-05-17T15:19:26+02:00"`,
+which is misleading — the **actual wire body** is `1779025868` (integer
+seconds since the Unix epoch). The SDK fails to deserialize an ISO 8601
+string into its `DateTime` shape, with this error:
+
+```
+only `Infinity`, `-Infinity`, `NaN` can represent a float as a string
+but found `2026-05-17T13:50:41Z`
+```
+
+This matches the Smithy `restJson1` default — `epoch-seconds` is the
+implicit `@timestampFormat`. Always send JSON numbers, never strings.
+
+**General rule.** When AWS CLI output looks like a human-readable
+timestamp, double-check the **raw HTTP body** with `--debug` before
+trusting it. The CLI deserialises then re-serialises, and the
+re-serialisation is the lie.
 
 ### C-3 — DuckDB is built against system `libduckdb` (Arch package), not bundled
 

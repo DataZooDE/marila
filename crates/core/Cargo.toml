@@ -11,3 +11,4 @@ duckdb.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+anyhow.workspace = true

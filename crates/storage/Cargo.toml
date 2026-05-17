@@ -12,4 +12,9 @@ aws-sdk-s3.workspace = true
 aws-credential-types.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+anyhow.workspace = true
 async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true }
+uuid.workspace = true
