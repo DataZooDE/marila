@@ -1,0 +1,56 @@
+name: marila
+
+# Minimal sidecar stack for the current vertical slice (CreateVectorBucket).
+# Only RustFS is started today. Postgres + Lakekeeper services for the
+# tables-side work land later (their images are pre-pulled so the first
+# `docker compose up` won't have to wait on a registry round-trip).
+
+services:
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: marila-rustfs
+    command: ["server", "/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: marila
+      RUSTFS_SECRET_KEY: marilasecret
+      RUSTFS_REGION: eu-west-1
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_OBS_LOGGER_LEVEL: warn
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console (handy for poking, not required)
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      # RustFS correctly returns 403 on unauthenticated GET / (S3 requires
+      # SigV4 for ListBuckets-on-root). `wget --spider` rejects that as
+      # failure; check only that the connection succeeds. See
+      # doc/DISCOVERIES.md D-3 and CLAUDE.md C-6.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/ 2>&1 | grep -qv 'Connection refused' && exit 0 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ----- deferred services (pull only) -----
+  #
+  # Uncomment and wire up under a `lakekeeper` compose profile when the
+  # first tables-side slice (`CreateTableBucket`) lands. Until then,
+  # keeping these commented avoids spinning up unnecessary state.
+  #
+  # postgres:
+  #   image: postgres:17
+  #   environment:
+  #     POSTGRES_USER: lakekeeper
+  #     POSTGRES_PASSWORD: lakekeeper
+  #     POSTGRES_DB: lakekeeper
+  #   profiles: [lakekeeper]
+  #
+  # lakekeeper:
+  #   image: quay.io/lakekeeper/catalog:latest-main
+  #   depends_on:
+  #     postgres: { condition: service_healthy }
+  #   profiles: [lakekeeper]
+
+volumes:
+  rustfs-data:
