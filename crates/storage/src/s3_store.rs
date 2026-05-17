@@ -1,7 +1,10 @@
+use anyhow::Context;
 use async_trait::async_trait;
 use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
-use aws_sdk_s3::{Client, config::Builder as S3ConfigBuilder, error::SdkError};
+use aws_sdk_s3::{
+    Client, config::Builder as S3ConfigBuilder, error::SdkError, primitives::ByteStream,
+};
 use tracing::debug;
 
 use crate::store::{BucketStore, StorageError};
@@ -85,6 +88,58 @@ impl BucketStore for S3BucketStore {
             }
             Err(e) => Err(StorageError::Backend(
                 anyhow::Error::new(e).context(format!("delete bucket {name}")),
+            )),
+        }
+    }
+
+    async fn put_object(&self, bucket: &str, key: &str, body: Vec<u8>) -> Result<(), StorageError> {
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(ByteStream::from(body))
+            .send()
+            .await
+            .with_context(|| format!("put object {bucket}/{key}"))?;
+        Ok(())
+    }
+
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        // S3 DELETE on a missing key returns 204 / success — it's
+        // idempotent on the server side, so we don't need to filter
+        // any error variants here.
+        self.client
+            .delete_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+            .with_context(|| format!("delete object {bucket}/{key}"))?;
+        Ok(())
+    }
+
+    async fn get_object(&self, bucket: &str, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        match self
+            .client
+            .get_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(out) => {
+                let bytes = out
+                    .body
+                    .collect()
+                    .await
+                    .with_context(|| format!("collect body of {bucket}/{key}"))?
+                    .into_bytes()
+                    .to_vec();
+                Ok(Some(bytes))
+            }
+            Err(SdkError::ServiceError(svc)) if svc.raw().status().as_u16() == 404 => Ok(None),
+            Err(e) => Err(StorageError::Backend(
+                anyhow::Error::new(e).context(format!("get object {bucket}/{key}")),
             )),
         }
     }

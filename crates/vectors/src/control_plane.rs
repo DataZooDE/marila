@@ -378,6 +378,27 @@ pub async fn put_vectors(
         });
     }
 
+    // FV-4 / REQUIREMENTS.md: write each vector as a JSON snapshot to
+    // RustFS **before** the DuckDB INSERT — RustFS is the source of
+    // truth and the rebuild-from-snapshot path uses these files. If a
+    // snapshot write fails, the whole batch fails and no state row
+    // lands; clients can retry.
+    for w in &writes {
+        let body = serde_json::to_vec(&SnapshotBody {
+            key: &w.key,
+            data: &w.data,
+            metadata: w.metadata.as_ref(),
+        })
+        .map_err(|e| AwsError::Internal {
+            message: format!("serialise vector snapshot: {e}"),
+        })?;
+        let key = snapshot_key(&index, &w.key);
+        app.storage
+            .put_object(&bucket, &key, body)
+            .await
+            .map_err(storage_error)?;
+    }
+
     run_state(app.state.clone(), {
         let bucket = bucket.clone();
         let index = index.clone();
@@ -387,6 +408,25 @@ pub async fn put_vectors(
     .map_err(data_plane_error)?;
 
     Ok(Json(PutVectorsOutput::default()))
+}
+
+/// Path inside the vector bucket where we write the per-vector JSON
+/// snapshot. The architecture (FV-4) specifies
+/// `<bucket>/<index>/<key>.json`; the bucket is the S3 bucket name
+/// itself, the prefix here is just `<index>/<key>.json`.
+fn snapshot_key(index: &str, key: &str) -> String {
+    format!("{index}/{key}.json")
+}
+
+/// Shape we write to the RustFS snapshot. Matches the conceptual
+/// `VectorWrite` so the rebuild path (not implemented yet) can deserialize
+/// straight back into the state store.
+#[derive(serde::Serialize)]
+struct SnapshotBody<'a> {
+    key: &'a str,
+    data: &'a [f32],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<&'a serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +563,21 @@ pub async fn delete_vectors(
     })
     .await
     .map_err(data_plane_error)?;
+
+    // Best-effort snapshot cleanup. Per-key delete_object is
+    // idempotent, so we don't fail the request when a snapshot was
+    // missing — the state-row delete already succeeded.
+    for k in &input.keys {
+        let object_key = snapshot_key(&index, k);
+        if let Err(e) = app.storage.delete_object(&bucket, &object_key).await {
+            tracing::warn!(
+                bucket = %bucket,
+                key = %object_key,
+                error = %format!("{e:#}"),
+                "snapshot cleanup failed — vector deleted from state but object remains"
+            );
+        }
+    }
 
     Ok(Json(serde_json::json!({})))
 }

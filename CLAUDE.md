@@ -486,6 +486,7 @@ in `doc/GAP_ANALYSIS.md`.
 | `GetTableBucket` by ARN | ✅ done | `*_get_table_bucket_by_arn` |
 | `GetTableBucket` missing → `NotFoundException` (exact AWS body) | ✅ done | `*_get_missing_table_bucket_is_not_found` |
 | `DeleteTableBucket` missing → `NotFoundException` | ✅ done | `*_delete_missing_table_bucket_is_not_found` |
+| FV-4: `PutVectors` writes JSON snapshot to RustFS *before* DuckDB insert (and DeleteVectors removes it) | ✅ done | `tests/data_plane.rs::local_put_vectors_writes_snapshot_to_rustfs` |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
 `core`, `storage`, `vectors`, `tables`, `integration_tests`.
@@ -508,9 +509,10 @@ Suggested order (low risk → higher):
 - `CreateTable` + `GetTable` — proxies to Lakekeeper's catalog REST,
   involves Iceberg REST pass-through under `/iceberg/v1/...` per
   ARCHITECTURE.md §6.2.
-- Add a RustFS snapshot path for `PutVectors` per FV-4 (today marila
-  stores vectors only in DuckDB; AWS contract is satisfied but the
-  durability promise — "RustFS is the source of truth" — isn't yet).
+- Rebuild-from-snapshot path on engine open: today PutVectors writes
+  the JSON snapshot durably (FV-4), but if `state.duckdb` is wiped, we
+  don't rehydrate from RustFS. Walking `<bucket>/<index>/*.json` and
+  re-issuing INSERTs would close this.
 - VSS HNSW recall under restrictive filter — D-12 oversample
   mitigation (current marila inlines the WHERE clause and lets DuckDB
   decide; recall divergence vs. AWS is unproven and only matters at

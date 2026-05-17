@@ -32,25 +32,151 @@ services:
       retries: 10
       start_period: 5s
 
-  # ----- deferred services (pull only) -----
+  # ----- Lakekeeper sidecars (Iceberg REST catalog for the tables side) -----
   #
-  # Uncomment and wire up under a `lakekeeper` compose profile when the
-  # first tables-side slice (`CreateTableBucket`) lands. Until then,
-  # keeping these commented avoids spinning up unnecessary state.
+  # Started under the `lakekeeper` profile so the vectors-only test runs
+  # don't pay the boot cost:
+  #     docker compose --profile lakekeeper up -d
   #
-  # postgres:
-  #   image: postgres:17
-  #   environment:
-  #     POSTGRES_USER: lakekeeper
-  #     POSTGRES_PASSWORD: lakekeeper
-  #     POSTGRES_DB: lakekeeper
-  #   profiles: [lakekeeper]
+  # The bootstrap one-shots (accept-terms + create-warehouse) run on every
+  # `up` but are idempotent — Lakekeeper returns 4xx on the second pass
+  # which we tolerate.
   #
-  # lakekeeper:
-  #   image: quay.io/lakekeeper/catalog:latest-main
-  #   depends_on:
-  #     postgres: { condition: service_healthy }
-  #   profiles: [lakekeeper]
+  # Wire shapes:
+  #   - bootstrap:        POST /management/v1/bootstrap            (CLAUDE.md D-7)
+  #   - warehouse create: POST /management/v1/warehouse
+  #   - Iceberg REST:     GET/POST /catalog/v1/...                 (consumed by marila-tables)
+
+  postgres:
+    image: postgres:17
+    container_name: marila-postgres
+    environment:
+      POSTGRES_USER: lakekeeper
+      POSTGRES_PASSWORD: lakekeeper
+      POSTGRES_DB: lakekeeper
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lakekeeper -d lakekeeper"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    profiles: [lakekeeper]
+
+  migrate:
+    image: quay.io/lakekeeper/catalog:latest-main
+    container_name: marila-lakekeeper-migrate
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: ["migrate"]
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: marila-dev-encryption-key-please-rotate
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper
+      RUST_LOG: info
+    restart: "no"
+    profiles: [lakekeeper]
+
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:latest-main
+    container_name: marila-lakekeeper
+    depends_on:
+      rustfs: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    command: ["serve"]
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: marila-dev-encryption-key-please-rotate
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://lakekeeper:lakekeeper@postgres:5432/lakekeeper
+      LAKEKEEPER__AUTHZ_BACKEND: allow-all
+      RUST_LOG: info
+    ports:
+      - "8181:8181"
+    healthcheck:
+      # Image is distroless — no shell. Use the lakekeeper binary's own
+      # `healthcheck` subcommand which probes /health internally.
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    profiles: [lakekeeper]
+
+  createbuckets:
+    # One-shot: ensure the RustFS bucket Lakekeeper points at exists.
+    # Lakekeeper validates a warehouse by writing a probe file; the
+    # bucket must exist beforehand.
+    image: minio/mc:latest
+    container_name: marila-createbuckets
+    depends_on:
+      rustfs: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set rfs http://rustfs:9000 marila marilasecret &&
+        mc mb -p rfs/marila-warehouse || echo "bucket likely already exists"
+    restart: "no"
+    profiles: [lakekeeper]
+
+  bootstrap:
+    # One-shot: POST /management/v1/bootstrap with accept-terms-of-use.
+    # Idempotent — Lakekeeper returns a non-2xx on the second pass which
+    # we explicitly tolerate so re-runs don't fail.
+    image: curlimages/curl:8.10.1
+    container_name: marila-lakekeeper-bootstrap
+    depends_on:
+      lakekeeper: { condition: service_healthy }
+    command:
+      - sh
+      - -c
+      - |
+        curl -fsS -X POST http://lakekeeper:8181/management/v1/bootstrap \
+          -H 'Content-Type: application/json' \
+          --data '{"accept-terms-of-use": true}' \
+          || echo "bootstrap probably already done (non-2xx is expected on re-run)"
+    restart: "no"
+    profiles: [lakekeeper]
+
+  initialwarehouse:
+    # One-shot: POST /management/v1/warehouse with a marila-test warehouse
+    # pointed at the RustFS bucket marila-warehouse. Same idempotency
+    # treatment as the bootstrap.
+    image: curlimages/curl:8.10.1
+    container_name: marila-lakekeeper-warehouse
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+      createbuckets: { condition: service_completed_successfully }
+    command:
+      - sh
+      - -c
+      - |
+        curl -fsS -X POST http://lakekeeper:8181/management/v1/warehouse \
+          -H 'Content-Type: application/json' \
+          --data '{
+            "warehouse-name": "marila-warehouse",
+            "project-id": "00000000-0000-0000-0000-000000000000",
+            "storage-profile": {
+              "type": "s3",
+              "bucket": "marila-warehouse",
+              "key-prefix": "warehouse",
+              "endpoint": "http://rustfs:9000",
+              "region": "eu-west-1",
+              "path-style-access": true,
+              "flavor": "s3-compat",
+              "sts-enabled": false,
+              "remote-signing-enabled": false
+            },
+            "storage-credential": {
+              "type": "s3",
+              "credential-type": "access-key",
+              "aws-access-key-id": "marila",
+              "aws-secret-access-key": "marilasecret"
+            }
+          }' \
+          || echo "initial warehouse probably already created (non-2xx is expected on re-run)"
+    restart: "no"
+    profiles: [lakekeeper]
 
 volumes:
   rustfs-data:
+  postgres-data:

@@ -387,3 +387,69 @@ async fn meta_round_trip(c: Client, ctx: BucketCtx) {
     // The metadata is fully exercised by QueryVectors' filter tests
     // when those land.
 }
+
+// ---------------------------------------------------------------------------
+// FV-4: PutVectors writes a JSON snapshot to RustFS before the DuckDB
+// insert. This is marila-internal behaviour (no AWS analogue) so it
+// only has a `local_*` variant.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn local_put_vectors_writes_snapshot_to_rustfs() {
+    use marila_storage::{BucketStore, S3BucketStore, S3Config};
+
+    let _marila = MarilaProcess::start();
+    let c = client(Target::Local).await;
+    with_bucket_and_indexes(c, "dpsnap", |c, ctx| async move {
+        let index = "myx".to_owned();
+        provision_index(&c, &ctx, &index).await;
+
+        c.put_vectors()
+            .vector_bucket_name(ctx.bucket())
+            .index_name(&index)
+            .vectors(vec_with("snap", [0.25, 0.5, 0.75, 1.0]))
+            .send()
+            .await
+            .expect("PutVectors");
+
+        // Read the snapshot directly from RustFS via the storage adapter
+        // — the path is `<bucket>/<index>/<key>.json`.
+        let storage = S3BucketStore::connect(S3Config {
+            endpoint: "http://localhost:9000".into(),
+            access_key_id: "marila".into(),
+            secret_access_key: "marilasecret".into(),
+            region: "eu-west-1".into(),
+        })
+        .await
+        .expect("storage connect");
+        let object_key = format!("{index}/snap.json");
+        let body = storage
+            .get_object(ctx.bucket(), &object_key)
+            .await
+            .expect("get_object")
+            .expect("snapshot must exist on RustFS after PutVectors");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body).expect("snapshot is valid JSON");
+        assert_eq!(parsed["key"], serde_json::json!("snap"));
+        assert_eq!(parsed["data"], serde_json::json!([0.25, 0.5, 0.75, 1.0]));
+
+        // DeleteVectors must remove the snapshot too (best-effort but
+        // observable here).
+        c.delete_vectors()
+            .vector_bucket_name(ctx.bucket())
+            .index_name(&index)
+            .keys("snap")
+            .send()
+            .await
+            .expect("DeleteVectors");
+        let after = storage
+            .get_object(ctx.bucket(), &object_key)
+            .await
+            .expect("get_object after delete");
+        assert!(
+            after.is_none(),
+            "DeleteVectors must remove the RustFS snapshot"
+        );
+    })
+    .await;
+}
