@@ -307,3 +307,79 @@ where
         std::panic::resume_unwind(panic);
     }
 }
+
+/// Run `body` inside a freshly-created bucket. Tracks any indexes the
+/// body creates via `add_index` so cleanup can DROP them before
+/// DeleteVectorBucket (which AWS rejects on a non-empty bucket).
+///
+/// The body receives a [`BucketCtx`] for index bookkeeping; calling
+/// `ctx.add_index("name")` after a successful CreateIndex enrolls the
+/// name for cleanup.
+pub async fn with_bucket_and_indexes<F, Fut>(client: Client, prefix: &str, body: F)
+where
+    F: FnOnce(Client, BucketCtx) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let bucket = unique_bucket_name(prefix);
+    client
+        .create_vector_bucket()
+        .vector_bucket_name(&bucket)
+        .send()
+        .await
+        .expect("create bucket for with_bucket_and_indexes");
+
+    let ctx = BucketCtx::new(bucket.clone());
+    let ctx_for_body = ctx.clone();
+    let outcome = AssertUnwindSafe(body(client.clone(), ctx_for_body))
+        .catch_unwind()
+        .await;
+
+    for index in ctx.indexes() {
+        let _ = client
+            .delete_index()
+            .vector_bucket_name(&bucket)
+            .index_name(&index)
+            .send()
+            .await;
+    }
+    let _ = client
+        .delete_vector_bucket()
+        .vector_bucket_name(&bucket)
+        .send()
+        .await;
+
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// Bucket lifecycle context handed to a [`with_bucket_and_indexes`] body.
+#[derive(Clone)]
+pub struct BucketCtx {
+    bucket: String,
+    indexes: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl BucketCtx {
+    fn new(bucket: String) -> Self {
+        Self {
+            bucket,
+            indexes: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// The bucket name the body should operate on.
+    pub fn bucket(&self) -> &str {
+        &self.bucket
+    }
+
+    /// Enroll an index for cleanup. Call this *after* a successful
+    /// CreateIndex so we don't try to delete things that never existed.
+    pub fn add_index(&self, name: impl Into<String>) {
+        self.indexes.lock().expect("ctx mutex").push(name.into());
+    }
+
+    fn indexes(&self) -> Vec<String> {
+        self.indexes.lock().expect("ctx mutex").clone()
+    }
+}

@@ -4,7 +4,10 @@ use anyhow::Context;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use duckdb::{Connection, params};
 
-use crate::state::{StateError, StateStore, VectorBucketPage, VectorBucketRow};
+use crate::{
+    state::{DistanceMetric, IndexRow, StateError, StateStore, VectorBucketPage, VectorBucketRow},
+    vss,
+};
 
 /// DuckDB-backed [`StateStore`].
 ///
@@ -29,7 +32,7 @@ impl DuckDbStateStore {
         }
         let conn =
             Connection::open(path).with_context(|| format!("open duckdb at {}", path.display()))?;
-        migrate(&conn)?;
+        prepare(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -39,26 +42,56 @@ impl DuckDbStateStore {
     #[cfg(test)]
     pub fn in_memory() -> Result<Self, StateError> {
         let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
-        migrate(&conn)?;
+        prepare(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 }
 
+fn prepare(conn: &Connection) -> Result<(), StateError> {
+    migrate(conn)?;
+    // Loading VSS is a soft requirement: the bucket-only operations
+    // don't need it. If we ever go air-gapped before the cache is
+    // primed, `create_index` will surface the real error.
+    let _ = vss::enable_vss(conn);
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         r#"
         CREATE SCHEMA IF NOT EXISTS state;
+        CREATE SCHEMA IF NOT EXISTS vec_data;
         CREATE TABLE IF NOT EXISTS state.vector_buckets (
             name        VARCHAR PRIMARY KEY,
             arn         VARCHAR NOT NULL,
             created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS state.vector_indexes (
+            bucket_name      VARCHAR NOT NULL,
+            name             VARCHAR NOT NULL,
+            arn              VARCHAR NOT NULL,
+            dimension        INTEGER NOT NULL,
+            distance_metric  VARCHAR NOT NULL,
+            created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (bucket_name, name)
+        );
         "#,
     )
     .context("migrate state schema")?;
     Ok(())
+}
+
+/// Build the DuckDB identifier for an index's backing table.
+///
+/// AWS validates bucket/index names to `[a-z0-9][a-z0-9-.]{1,61}[a-z0-9]`,
+/// so the only awkward characters are `-` and `.`. Replace both with
+/// `_` and join with `__` so we can round-trip the pair from the table
+/// name if we ever need to.
+fn backing_table_ident(bucket: &str, index: &str) -> String {
+    let sanitize = |s: &str| s.replace(['-', '.'], "_");
+    format!("vec_data.\"{}__{}\"", sanitize(bucket), sanitize(index))
 }
 
 impl StateStore for DuckDbStateStore {
@@ -154,6 +187,130 @@ impl StateStore for DuckDbStateStore {
         if n == 0 {
             return Err(StateError::NotFound(name.to_owned()));
         }
+        Ok(())
+    }
+
+    fn create_index(
+        &self,
+        bucket: &str,
+        index: &str,
+        arn: &str,
+        dimension: u32,
+        distance_metric: DistanceMetric,
+    ) -> Result<IndexRow, StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+
+        // 1. Bucket must exist — surfaces NotFoundException upstream
+        //    without ever touching the indexes table.
+        let bucket_present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM state.vector_buckets WHERE name = ?",
+                params![bucket],
+                |r| r.get(0),
+            )
+            .context("probe bucket presence")?;
+        if bucket_present == 0 {
+            return Err(StateError::NotFound(bucket.to_owned()));
+        }
+
+        // 2. Try to insert the index state row first — the composite PK
+        //    is what enforces ConflictException on duplicates.
+        let now = Utc::now().naive_utc();
+        let metric_wire = distance_metric.as_wire();
+        let res = conn.execute(
+            "INSERT INTO state.vector_indexes
+                 (bucket_name, name, arn, dimension, distance_metric, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![bucket, index, arn, dimension, metric_wire, now],
+        );
+        match res {
+            Ok(_) => {}
+            Err(e) if is_duplicate_key(&e) => {
+                return Err(StateError::AlreadyExists(format!("{bucket}/{index}")));
+            }
+            Err(e) => {
+                return Err(StateError::Internal(
+                    anyhow::Error::new(e).context("insert vector_index row"),
+                ));
+            }
+        }
+
+        // 3. Materialise the backing table and the HNSW index. If this
+        //    fails after the state row is in, roll back the row so a
+        //    retry sees the same "doesn't exist" outcome the client
+        //    started with.
+        let table = backing_table_ident(bucket, index);
+        let create_table = format!(
+            "CREATE TABLE {table} (key VARCHAR PRIMARY KEY, vec FLOAT[{dimension}], meta JSON);",
+        );
+        // We synthesise the index-name from a hash-safe form because
+        // DuckDB doesn't allow `.` in identifiers and the backing-table
+        // ident already contains a `.`.
+        let hnsw_ident = format!(
+            "\"hnsw_{}__{}\"",
+            bucket.replace(['-', '.'], "_"),
+            index.replace(['-', '.'], "_")
+        );
+        let create_index = format!(
+            "CREATE INDEX {hnsw_ident} ON {table} USING HNSW (vec) WITH (metric = '{}');",
+            match distance_metric {
+                DistanceMetric::Cosine => "cosine",
+                DistanceMetric::Euclidean => "l2sq",
+            }
+        );
+
+        let materialise = conn
+            .execute_batch(&create_table)
+            .and_then(|()| conn.execute_batch(&create_index));
+        if let Err(e) = materialise {
+            // Rollback so the retry has a clean slate.
+            let _ = conn.execute(
+                "DELETE FROM state.vector_indexes WHERE bucket_name = ? AND name = ?",
+                params![bucket, index],
+            );
+            return Err(StateError::Internal(
+                anyhow::Error::new(e).context("create backing table + hnsw index"),
+            ));
+        }
+
+        Ok(IndexRow {
+            bucket_name: bucket.to_owned(),
+            name: index.to_owned(),
+            arn: arn.to_owned(),
+            dimension,
+            distance_metric,
+            created_at: DateTime::<Utc>::from_naive_utc_and_offset(now, Utc),
+        })
+    }
+
+    fn count_indexes(&self, bucket: &str) -> Result<u64, StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM state.vector_indexes WHERE bucket_name = ?",
+                params![bucket],
+                |r| r.get(0),
+            )
+            .context("count indexes")?;
+        Ok(n as u64)
+    }
+
+    fn delete_index(&self, bucket: &str, index: &str) -> Result<(), StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let n = conn
+            .execute(
+                "DELETE FROM state.vector_indexes WHERE bucket_name = ? AND name = ?",
+                params![bucket, index],
+            )
+            .context("delete vector_index row")?;
+        if n == 0 {
+            return Err(StateError::NotFound(format!("{bucket}/{index}")));
+        }
+
+        // Drop the backing table best-effort: if it's missing we don't
+        // complain because the state row is already gone.
+        let table = backing_table_ident(bucket, index);
+        let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS {table};"));
         Ok(())
     }
 }
@@ -253,6 +410,69 @@ mod tests {
             page.rows.iter().all(|r| r.name.starts_with("foo-")),
             "prefix filter must exclude non-matching rows"
         );
+    }
+
+    fn make_index(store: &DuckDbStateStore, bucket: &str, index: &str, dim: u32) -> IndexRow {
+        store
+            .create_index(
+                bucket,
+                index,
+                &format!("arn:aws:s3vectors:eu-west-1:0:bucket/{bucket}/index/{index}"),
+                dim,
+                DistanceMetric::Cosine,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn create_index_requires_bucket() {
+        let store = fresh();
+        let err = store
+            .create_index(
+                "ghost",
+                "idx",
+                "arn:aws:s3vectors:eu-west-1:0:bucket/ghost/index/idx",
+                4,
+                DistanceMetric::Cosine,
+            )
+            .unwrap_err();
+        assert!(matches!(err, StateError::NotFound(n) if n == "ghost"));
+    }
+
+    #[test]
+    fn create_index_then_count_then_delete() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        assert_eq!(store.count_indexes("b").unwrap(), 0);
+        make_index(&store, "b", "i", 4);
+        assert_eq!(store.count_indexes("b").unwrap(), 1);
+        store.delete_index("b", "i").unwrap();
+        assert_eq!(store.count_indexes("b").unwrap(), 0);
+    }
+
+    #[test]
+    fn duplicate_index_is_already_exists() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        make_index(&store, "b", "i", 4);
+        let err = store
+            .create_index(
+                "b",
+                "i",
+                "arn:aws:s3vectors:eu-west-1:0:bucket/b/index/i",
+                4,
+                DistanceMetric::Cosine,
+            )
+            .unwrap_err();
+        assert!(matches!(err, StateError::AlreadyExists(s) if s == "b/i"));
+    }
+
+    #[test]
+    fn delete_missing_index_is_not_found() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        let err = store.delete_index("b", "ghost").unwrap_err();
+        assert!(matches!(err, StateError::NotFound(s) if s == "b/ghost"));
     }
 
     #[test]

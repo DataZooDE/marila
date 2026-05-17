@@ -4,16 +4,17 @@ use std::sync::Arc;
 
 use axum::{Json, extract::State};
 use marila_aws_compat::AwsError;
-use marila_core::{StateError, StateStore};
+use marila_core::{DistanceMetric, StateError, StateStore};
 use marila_storage::{BucketStore, StorageError};
 use tracing::instrument;
 
 use crate::{
-    arn::{parse_bucket_name_from_arn, vector_bucket_arn},
+    arn::{parse_bucket_name_from_arn, parse_index_from_arn, vector_bucket_arn, vector_index_arn},
     state::{
-        CreateVectorBucketInput, CreateVectorBucketOutput, DeleteVectorBucketInput,
-        GetVectorBucketInput, GetVectorBucketOutput, ListVectorBucketsInput,
-        ListVectorBucketsOutput, VectorBucketDescription, VectorBucketSummary,
+        CreateIndexInput, CreateIndexOutput, CreateVectorBucketInput, CreateVectorBucketOutput,
+        DeleteIndexInput, DeleteVectorBucketInput, GetVectorBucketInput, GetVectorBucketOutput,
+        ListVectorBucketsInput, ListVectorBucketsOutput, VectorBucketDescription,
+        VectorBucketSummary,
     },
 };
 
@@ -25,7 +26,17 @@ const DEFAULT_LIST_PAGE_SIZE: u32 = 100;
 const MAX_LIST_PAGE_SIZE: u32 = 500;
 
 /// Message body AWS sends on bucket-not-found (CLAUDE.md C-2b).
-const NOT_FOUND_MESSAGE: &str = "The specified vector bucket could not be found";
+const BUCKET_NOT_FOUND_MESSAGE: &str = "The specified vector bucket could not be found";
+
+/// Message body AWS sends on index-not-found (CLAUDE.md C-2c).
+const INDEX_NOT_FOUND_MESSAGE: &str = "The specified index could not be found";
+
+/// Message body AWS sends when DeleteVectorBucket runs on a bucket
+/// that still has indexes (CLAUDE.md C-2c).
+const BUCKET_NOT_EMPTY_MESSAGE: &str = "The specified vector bucket is not empty";
+
+/// Message body AWS sends on duplicate index name (CLAUDE.md C-2c).
+const INDEX_ALREADY_EXISTS_MESSAGE: &str = "An index with the specified name already exists";
 
 /// Wiring for the vectors crate: the two stores plus the AWS-account /
 /// region context needed to shape ARNs the way AWS does.
@@ -136,8 +147,20 @@ pub async fn delete_vector_bucket(
 ) -> Result<Json<serde_json::Value>, AwsError> {
     let name = bucket_name_from_either(&input.vector_bucket_name, &input.vector_bucket_arn)?;
 
-    // Delete the state row first — if it's missing we return NotFound
-    // without touching S3.
+    // Emptiness check first — matches the AWS contract that deleting a
+    // bucket with surviving indexes returns ConflictException with the
+    // exact body in CLAUDE.md C-2c.
+    let indexes = run_state(app.state.clone(), {
+        let bucket = name.clone();
+        move |s| s.count_indexes(&bucket)
+    })
+    .await?;
+    if indexes > 0 {
+        return Err(AwsError::Conflict(BUCKET_NOT_EMPTY_MESSAGE.to_owned()));
+    }
+
+    // Delete the state row — if it's missing we return NotFound without
+    // touching S3.
     run_state(app.state.clone(), {
         let name = name.clone();
         move |s| s.delete_vector_bucket(&name)
@@ -148,6 +171,90 @@ pub async fn delete_vector_bucket(
         .delete_bucket(&name)
         .await
         .map_err(storage_error)?;
+
+    Ok(Json(serde_json::json!({})))
+}
+
+// ---------------------------------------------------------------------------
+// CreateIndex
+// ---------------------------------------------------------------------------
+
+#[instrument(skip(app, input))]
+pub async fn create_index(
+    State(app): State<AppState>,
+    Json(input): Json<CreateIndexInput>,
+) -> Result<Json<CreateIndexOutput>, AwsError> {
+    let bucket = bucket_name_from_either(&input.vector_bucket_name, &input.vector_bucket_arn)?;
+
+    let index_name = input.index_name.as_deref().ok_or_else(|| {
+        AwsError::Validation("indexName is required".to_owned())
+    })?;
+    validate_index_name(index_name)?;
+
+    let data_type = input.data_type.as_deref().unwrap_or("float32");
+    if data_type != "float32" {
+        return Err(AwsError::Validation(format!(
+            "dataType must be `float32`, got `{data_type}`"
+        )));
+    }
+
+    let dimension = input
+        .dimension
+        .ok_or_else(|| AwsError::Validation("dimension is required".to_owned()))?;
+    if !(1..=4096).contains(&dimension) {
+        return Err(AwsError::Validation(format!(
+            "dimension must be between 1 and 4096 (got {dimension})"
+        )));
+    }
+    let dimension = dimension as u32;
+
+    let metric = input
+        .distance_metric
+        .as_deref()
+        .ok_or_else(|| AwsError::Validation("distanceMetric is required".to_owned()))?;
+    let metric = DistanceMetric::from_wire(metric).ok_or_else(|| {
+        AwsError::Validation(format!(
+            "distanceMetric must be `cosine` or `euclidean` (got `{metric}`)"
+        ))
+    })?;
+
+    let arn = vector_index_arn(&app.region, &app.account_id, &bucket, index_name);
+
+    let row = run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index_name.to_owned();
+        let arn = arn.clone();
+        move |s| s.create_index(&bucket, &index, &arn, dimension, metric)
+    })
+    .await
+    .map_err(index_create_error)?;
+
+    Ok(Json(CreateIndexOutput {
+        index_arn: row.arn,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// DeleteIndex
+// ---------------------------------------------------------------------------
+
+#[instrument(skip(app, input))]
+pub async fn delete_index(
+    State(app): State<AppState>,
+    Json(input): Json<DeleteIndexInput>,
+) -> Result<Json<serde_json::Value>, AwsError> {
+    let (bucket, index) = resolve_index_target(&input)?;
+
+    run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index.clone();
+        move |s| s.delete_index(&bucket, &index)
+    })
+    .await
+    .map_err(|e| match e {
+        AwsError::NotFound(_) => AwsError::NotFound(INDEX_NOT_FOUND_MESSAGE.to_owned()),
+        other => other,
+    })?;
 
     Ok(Json(serde_json::json!({})))
 }
@@ -190,6 +297,48 @@ fn validate_bucket_name(name: &str) -> Result<(), AwsError> {
     Ok(())
 }
 
+fn validate_index_name(name: &str) -> Result<(), AwsError> {
+    // Same 3..=63 window as bucket names (per `aws s3vectors create-index --help`).
+    let n = name.chars().count();
+    if !(3..=63).contains(&n) {
+        return Err(AwsError::Validation(format!(
+            "indexName length must be between 3 and 63 characters (got {n})"
+        )));
+    }
+    Ok(())
+}
+
+/// Resolve a DeleteIndex / future GetIndex target to `(bucket, index)`
+/// regardless of which (bucket name, bucket arn) + (index name, index arn)
+/// combination the client used.
+fn resolve_index_target(input: &DeleteIndexInput) -> Result<(String, String), AwsError> {
+    // Index ARN wins outright — it carries both pieces.
+    if let Some(arn) = input.index_arn.as_deref() {
+        let (b, i) = parse_index_from_arn(arn)?;
+        return Ok((b.to_owned(), i.to_owned()));
+    }
+    let bucket = bucket_name_from_either(&input.vector_bucket_name, &input.vector_bucket_arn)?;
+    let index = input
+        .index_name
+        .as_deref()
+        .ok_or_else(|| AwsError::Validation("indexName is required".to_owned()))?;
+    validate_index_name(index)?;
+    Ok((bucket, index.to_owned()))
+}
+
+/// State-error → AWS-error mapping for `CreateIndex` only.
+///
+/// `StateError::NotFound` here means **the bucket** wasn't found
+/// (CreateIndex only consults bucket presence at the `StateError`
+/// level); `AlreadyExists` means the index already exists.
+fn index_create_error(e: AwsError) -> AwsError {
+    match e {
+        AwsError::NotFound(_) => AwsError::NotFound(BUCKET_NOT_FOUND_MESSAGE.to_owned()),
+        AwsError::Conflict(_) => AwsError::Conflict(INDEX_ALREADY_EXISTS_MESSAGE.to_owned()),
+        other => other,
+    }
+}
+
 fn validate_prefix(prefix: &str) -> Result<(), AwsError> {
     let n = prefix.chars().count();
     if !(1..=63).contains(&n) {
@@ -221,7 +370,7 @@ fn state_error(e: StateError) -> AwsError {
         StateError::AlreadyExists(n) => AwsError::Conflict(format!(
             "A vector bucket with the name `{n}` already exists"
         )),
-        StateError::NotFound(_) => AwsError::NotFound(NOT_FOUND_MESSAGE.to_owned()),
+        StateError::NotFound(_) => AwsError::NotFound(BUCKET_NOT_FOUND_MESSAGE.to_owned()),
         StateError::Internal(e) => AwsError::Internal {
             message: format!("{e:#}"),
         },

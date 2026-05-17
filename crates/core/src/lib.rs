@@ -4,6 +4,9 @@
 
 mod duckdb_store;
 mod state;
+mod vss;
 
 pub use duckdb_store::DuckDbStateStore;
-pub use state::{StateError, StateStore, VectorBucketPage, VectorBucketRow};
+pub use state::{
+    DistanceMetric, IndexRow, StateError, StateStore, VectorBucketPage, VectorBucketRow,
+};

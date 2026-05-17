@@ -9,6 +9,48 @@ pub struct VectorBucketRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// One state row for a vector index. Indexes live under a bucket;
+/// `(bucket_name, name)` is the composite primary key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexRow {
+    pub bucket_name: String,
+    pub name: String,
+    pub arn: String,
+    pub dimension: u32,
+    pub distance_metric: DistanceMetric,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The two distance metrics S3 Vectors supports today (CLAUDE.md C-2c).
+///
+/// Modelled as an enum (not a string) so handlers and the DuckDB
+/// HNSW backing-table DDL can't drift apart on spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistanceMetric {
+    Cosine,
+    Euclidean,
+}
+
+impl DistanceMetric {
+    /// String the AWS API uses on the wire.
+    pub fn as_wire(&self) -> &'static str {
+        match self {
+            Self::Cosine => "cosine",
+            Self::Euclidean => "euclidean",
+        }
+    }
+
+    /// Parse the wire form. Returns `None` for an unknown metric; the
+    /// vectors handler maps that to a `ValidationException`.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "cosine" => Some(Self::Cosine),
+            "euclidean" => Some(Self::Euclidean),
+            _ => None,
+        }
+    }
+}
+
 /// Things that can go wrong talking to the state store.
 ///
 /// `AlreadyExists` is its own variant so callers can map it to the
@@ -62,4 +104,30 @@ pub trait StateStore: Send + Sync {
     fn get_vector_bucket(&self, name: &str) -> Result<VectorBucketRow, StateError>;
 
     fn delete_vector_bucket(&self, name: &str) -> Result<(), StateError>;
+
+    /// Create an index under `bucket`. The DuckDB impl also creates the
+    /// backing table `vec_<bucket>__<index>` and the HNSW index on it.
+    ///
+    /// Errors:
+    ///  - [`StateError::NotFound`] when the bucket doesn't exist
+    ///    (mapped to AWS `NotFoundException`).
+    ///  - [`StateError::AlreadyExists`] when the index exists
+    ///    (mapped to `ConflictException`).
+    #[allow(clippy::too_many_arguments)]
+    fn create_index(
+        &self,
+        bucket: &str,
+        index: &str,
+        arn: &str,
+        dimension: u32,
+        distance_metric: DistanceMetric,
+    ) -> Result<IndexRow, StateError>;
+
+    /// Number of indexes under a bucket. Used by `DeleteVectorBucket`
+    /// to enforce AWS's "bucket must be empty" rule (CLAUDE.md C-2c).
+    fn count_indexes(&self, bucket: &str) -> Result<u64, StateError>;
+
+    /// Drop an index and its backing table. Idempotent w.r.t. the
+    /// backing table — missing index returns `StateError::NotFound`.
+    fn delete_index(&self, bucket: &str, index: &str) -> Result<(), StateError>;
 }

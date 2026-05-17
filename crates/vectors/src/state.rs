@@ -131,3 +131,42 @@ pub struct DeleteVectorBucketInput {
     pub vector_bucket_name: Option<String>,
     pub vector_bucket_arn: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// CreateIndex
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CreateIndexInput {
+    pub vector_bucket_name: Option<String>,
+    pub vector_bucket_arn: Option<String>,
+    pub index_name: Option<String>,
+    pub data_type: Option<String>,
+    pub dimension: Option<i64>,
+    pub distance_metric: Option<String>,
+    // Accepted but unused for the spike — present so clients that send
+    // them don't get a 400 from serde.
+    pub encryption_configuration: Option<serde_json::Value>,
+    pub metadata_configuration: Option<serde_json::Value>,
+    pub tags: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateIndexOutput {
+    pub index_arn: String,
+}
+
+// ---------------------------------------------------------------------------
+// DeleteIndex
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DeleteIndexInput {
+    pub vector_bucket_name: Option<String>,
+    pub vector_bucket_arn: Option<String>,
+    pub index_name: Option<String>,
+    pub index_arn: Option<String>,
+}

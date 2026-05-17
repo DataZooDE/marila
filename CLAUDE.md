@@ -186,6 +186,43 @@ services aren't started yet. Add them when we start a tables-side feature.
 - AWS also blocks delete when indexes still exist on the bucket — we
   don't have indexes yet so this code path is deferred until Round B.
 
+### C-2c — CreateIndex / DeleteIndex + bucket-non-empty wire shapes (probed 2026-05-17)
+
+**CreateIndex**
+- Request: `POST /CreateIndex` body:
+  ```json
+  {
+    "vectorBucketName": "<bucket>",    // OR vectorBucketArn
+    "indexName": "<index>",
+    "dataType": "float32",             // only allowed value
+    "dimension": <1..=4096>,
+    "distanceMetric": "cosine"|"euclidean"
+    // optional: encryptionConfiguration, metadataConfiguration, tags
+  }
+  ```
+- Success: HTTP 200, body
+  `{"indexArn":"arn:aws:s3vectors:<region>:<account>:bucket/<bucket>/index/<index>"}`.
+  Note the **nested** ARN — `:bucket/<b>/index/<i>` (not a separate `:index/` resource type).
+- Duplicate index: HTTP 409 `ConflictException`,
+  body `{"message":"An index with the specified name already exists"}`.
+- Bucket missing: HTTP 404 `NotFoundException`,
+  body `{"message":"The specified vector bucket could not be found"}` (identical text to GetVectorBucket).
+- Dimension out of range (e.g. 9999): HTTP 400 `ValidationException`
+  with smithy-shaped `fieldList` detail.
+
+**DeleteIndex**
+- Request: `POST /DeleteIndex` body
+  `{"vectorBucketName":"<b>","indexName":"<i>"}` (or `vectorBucketArn`).
+- Success: HTTP 200, empty.
+- Missing index: HTTP 404 `NotFoundException`,
+  body `{"message":"The specified index could not be found"}` (note: **index**, not **vector bucket**).
+
+**DeleteVectorBucket-with-indexes**
+- HTTP 409 `ConflictException`,
+  body `{"message":"The specified vector bucket is not empty"}`.
+  Once we track indexes in marila state, the `DeleteVectorBucket`
+  handler must check for them and refuse with this exact message.
+
 ### C-8 — Test-bucket cleanup must run on the test's own tokio runtime
 
 First attempt at cleanup used a sync `Drop` impl that spun up a brand-new
@@ -224,6 +261,11 @@ Use an async scope helper instead.
 | `DeleteVectorBucket` by name (idempotent, then-gone) | ✅ done | `tests/delete_vector_bucket.rs::*_delete_vector_bucket_by_name_then_gone` |
 | `DeleteVectorBucket` by ARN | ✅ done | `*_delete_vector_bucket_by_arn` |
 | `DeleteVectorBucket` missing → `NotFoundException` | ✅ done | `*_delete_missing_is_not_found` |
+| `DeleteVectorBucket` with surviving indexes → `ConflictException` ("not empty") | ✅ done | `*_delete_bucket_with_index_returns_conflict` |
+| `CreateIndex` round-trip (returns nested `:bucket/<b>/index/<i>` ARN) | ✅ done | `tests/create_index.rs::*_create_index_round_trips` |
+| `CreateIndex` duplicate → `ConflictException` ("An index with the specified name already exists") | ✅ done | `*_create_index_duplicate_returns_conflict` |
+| `CreateIndex` missing bucket → `NotFoundException` (bucket-not-found body text) | ✅ done | `*_create_index_missing_bucket_is_not_found` |
+| `DeleteIndex` (covered transitively by Round B cleanup) | ✅ done | covered |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
 `core`, `storage`, `vectors`, `integration_tests`. Tables side
@@ -241,11 +283,9 @@ recipe:
 4. Refactor, commit.
 
 Suggested order (low risk → higher):
-- `CreateIndex` (forces DuckDB VSS extension on engine open — big jump,
-  see `doc/DISCOVERIES.md` D-11 / D-6). This is the next slice the user
-  has signed off on.
-- `ListIndexes`, `GetIndex`, `DeleteIndex` (mirrors the bucket-CRUD
-  contract pattern).
+- `ListIndexes` + `GetIndex` standalone contract tests (mirrors the
+  bucket-CRUD pattern; `DeleteIndex` is already implemented and used
+  by cleanup but lacks its own contract test).
 - `PutVectors` / `GetVectors` / `DeleteVectors` / `ListVectors` (the
   data-plane on top of `vec_<b>_<i>` backing tables).
 - `QueryVectors` (the headline op — needs the Mongo-filter → SQL bridge
