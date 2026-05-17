@@ -1,0 +1,61 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/api",
+    "crates/aws_compat",
+    "crates/core",
+    "crates/integration_tests",
+    "crates/storage",
+    "crates/vectors",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+marila-aws-compat = { path = "crates/aws_compat" }
+marila-core = { path = "crates/core" }
+marila-storage = { path = "crates/storage" }
+marila-vectors = { path = "crates/vectors" }
+
+# HTTP / async
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Time + ids
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+uuid = { version = "1", features = ["v4"] }
+
+# Storage backends
+# `duckdb` without the `bundled` feature links to system libduckdb
+# (Arch package `duckdb` ships /usr/include/duckdb.h + /usr/lib/libduckdb.so).
+# See CLAUDE.md C-3.
+duckdb = "1.10502"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+aws-credential-types = "1"
+
+# Test-only — AWS S3 Vectors client used by the contract tests.
+aws-sdk-s3vectors = "1"
+
+[profile.dev]
+debug = 1            # smaller binary, faster link; full backtraces still work
+incremental = true
