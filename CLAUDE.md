@@ -440,10 +440,13 @@ Use an async scope helper instead.
 | `QueryVectors` Mongo `filter` (implicit `$eq`, `$gt/$lt/$gte/$lte`, `$in/$nin`, `$and/$or/$not`) | ✅ done | `*_query_vectors_metadata_filter_excludes_non_matching` |
 | `QueryVectors` missing index → `NotFoundException` (collapsed index body) | ✅ done | `*_query_vectors_missing_index_is_not_found` |
 | `QueryVectors` dim mismatch → `ValidationException` | ✅ done | `*_query_vectors_dim_mismatch_is_validation` |
+| `CreateTableBucket` + list round-trip (s3tables REST+JSON, customer type, AWS ARN shape) | ✅ done | `tests/table_buckets.rs::*_create_table_bucket_round_trips` |
+| `GetTableBucket` by ARN | ✅ done | `*_get_table_bucket_by_arn` |
+| `GetTableBucket` missing → `NotFoundException` (exact AWS body) | ✅ done | `*_get_missing_table_bucket_is_not_found` |
+| `DeleteTableBucket` missing → `NotFoundException` | ✅ done | `*_delete_missing_table_bucket_is_not_found` |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
-`core`, `storage`, `vectors`, `integration_tests`. Tables side
-(`crates/tables`) is not present yet.
+`core`, `storage`, `vectors`, `tables`, `integration_tests`.
 
 ## What's next
 
@@ -457,13 +460,15 @@ recipe:
 4. Refactor, commit.
 
 Suggested order (low risk → higher):
+- s3tables namespaces (`CreateNamespace` / `ListNamespaces` /
+  `GetNamespace` / `DeleteNamespace`) — first step that needs
+  Lakekeeper running (uncomment the deferred compose services per D-7).
+- `CreateTable` + `GetTable` — proxies to Lakekeeper's catalog REST,
+  involves Iceberg REST pass-through under `/iceberg/v1/...` per
+  ARCHITECTURE.md §6.2.
 - Add a RustFS snapshot path for `PutVectors` per FV-4 (today marila
   stores vectors only in DuckDB; AWS contract is satisfied but the
   durability promise — "RustFS is the source of truth" — isn't yet).
-- Tables side, starting from `CreateTableBucket` (forces Lakekeeper +
-  Postgres into the compose graph; uncomment the deferred service
-  blocks in `docker-compose.yml` and add the bootstrap one-shots per
-  `doc/DISCOVERIES.md` D-7).
 - VSS HNSW recall under restrictive filter — D-12 oversample
   mitigation (current marila inlines the WHERE clause and lets DuckDB
   decide; recall divergence vs. AWS is unproven and only matters at
