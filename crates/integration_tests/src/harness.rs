@@ -278,3 +278,32 @@ where
         std::panic::resume_unwind(panic);
     }
 }
+
+/// Like [`with_bucket`] but for tests that need a set of buckets
+/// (e.g. pagination, prefix-filter contracts).
+///
+/// All of `names` are deleted on scope exit — successful, asserted, or
+/// panicked. The body is responsible for creating them; that way the
+/// test can decide which subset to create with marila vs. AWS-only
+/// validation.
+pub async fn with_buckets<F, Fut>(client: Client, names: Vec<String>, body: F)
+where
+    F: FnOnce(Client, Vec<String>) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let outcome = AssertUnwindSafe(body(client.clone(), names.clone()))
+        .catch_unwind()
+        .await;
+
+    for n in &names {
+        let _ = client
+            .delete_vector_bucket()
+            .vector_bucket_name(n)
+            .send()
+            .await;
+    }
+
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}

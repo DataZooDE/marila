@@ -155,6 +155,37 @@ The vertical slice in progress is `CreateVectorBucket`; only RustFS is
 needed. Lakekeeper + Postgres images can be pre-pulled but their compose
 services aren't started yet. Add them when we start a tables-side feature.
 
+### C-2b — ListVectorBuckets / GetVectorBucket / DeleteVectorBucket wire shapes (probed 2026-05-17)
+
+**ListVectorBuckets**
+- Request: `POST /ListVectorBuckets` body any of `{}`, `{"prefix": "..."}`,
+  `{"maxResults": N}`, `{"nextToken": "..."}`. Constraints: prefix 1..=63
+  chars; `maxResults` is the *underlying* API field (the CLI exposes
+  `--page-size` + `--max-items` on top).
+- Success: `{"vectorBuckets": [...], "nextToken": "..."}`. `nextToken` is
+  **absent** (not null) when no more pages — match this by
+  `#[serde(skip_serializing_if = "Option::is_none")]`.
+- Empty state: `{"vectorBuckets":[]}` with no `nextToken`.
+
+**GetVectorBucket**
+- Request: `POST /GetVectorBucket` with exactly one of `{"vectorBucketName": "..."}`
+  or `{"vectorBucketArn": "..."}`. Both must be accepted.
+- Success: `{"vectorBucket":{"vectorBucketName":"...","vectorBucketArn":"...","creationTime":<int>,"encryptionConfiguration":{"sseType":"AES256"}}}`.
+  The `encryptionConfiguration` is **always present** on the response,
+  defaulting to `{"sseType": "AES256"}` (SSE-S3) when CreateVectorBucket
+  was called without one. We mirror that default.
+- Not found: HTTP 404, header `x-amzn-errortype: NotFoundException`,
+  body `{"message":"The specified vector bucket could not be found"}`.
+
+**DeleteVectorBucket**
+- Request: `POST /DeleteVectorBucket` with exactly one of `{"vectorBucketName": "..."}`
+  or `{"vectorBucketArn": "..."}`.
+- Success: HTTP 200, empty body `{}` (Content-Length 0 over the wire).
+- Not found: same shape as GetVectorBucket above (404 / NotFoundException
+  / same message string).
+- AWS also blocks delete when indexes still exist on the bucket — we
+  don't have indexes yet so this code path is deferred until Round B.
+
 ### C-8 — Test-bucket cleanup must run on the test's own tokio runtime
 
 First attempt at cleanup used a sync `Drop` impl that spun up a brand-new
@@ -186,8 +217,13 @@ Use an async scope helper instead.
 | Repo bootstrap (Cargo workspace, docker-compose, CLAUDE.md, /health) | ✅ done | — |
 | `CreateVectorBucket` round-trip | ✅ done | `tests/create_vector_bucket.rs::*_create_vector_bucket_round_trips` |
 | `CreateVectorBucket` duplicate-name → `ConflictException` | ✅ done | `*_create_vector_bucket_duplicate_returns_conflict` |
-| `ListVectorBuckets` (basic happy path, used by the create test's verify) | ✅ done | covered transitively |
-| `DeleteVectorBucket` (used by cleanup) | ✅ done | covered transitively |
+| `ListVectorBuckets` w/ `prefix` filter + `maxResults`/`nextToken` pagination | ✅ done | `tests/list_vector_buckets.rs::*_list_vector_buckets_prefix_and_pagination` |
+| `GetVectorBucket` by name (incl. default `AES256` encryption shape) | ✅ done | `tests/get_vector_bucket.rs::*_get_vector_bucket_by_name_returns_default_encryption` |
+| `GetVectorBucket` by ARN | ✅ done | `*_get_vector_bucket_by_arn` |
+| `GetVectorBucket` missing → `NotFoundException` | ✅ done | `*_get_vector_bucket_missing_is_not_found` |
+| `DeleteVectorBucket` by name (idempotent, then-gone) | ✅ done | `tests/delete_vector_bucket.rs::*_delete_vector_bucket_by_name_then_gone` |
+| `DeleteVectorBucket` by ARN | ✅ done | `*_delete_vector_bucket_by_arn` |
+| `DeleteVectorBucket` missing → `NotFoundException` | ✅ done | `*_delete_missing_is_not_found` |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
 `core`, `storage`, `vectors`, `integration_tests`. Tables side
@@ -205,14 +241,15 @@ recipe:
 4. Refactor, commit.
 
 Suggested order (low risk → higher):
-- Promote `ListVectorBuckets` to its own contract test (currently only
-  exercised inside the Create test): pagination via `maxResults` / `nextToken`,
-  `prefix` filter, empty-state response shape.
-- `GetVectorBucket` (returns a single `vectorBucket` struct — needs a new
-  state-store query).
-- `DeleteVectorBucket` standalone contract test, including not-found shape.
 - `CreateIndex` (forces DuckDB VSS extension on engine open — big jump,
-  see `doc/DISCOVERIES.md` D-11 / D-6).
+  see `doc/DISCOVERIES.md` D-11 / D-6). This is the next slice the user
+  has signed off on.
+- `ListIndexes`, `GetIndex`, `DeleteIndex` (mirrors the bucket-CRUD
+  contract pattern).
+- `PutVectors` / `GetVectors` / `DeleteVectors` / `ListVectors` (the
+  data-plane on top of `vec_<b>_<i>` backing tables).
+- `QueryVectors` (the headline op — needs the Mongo-filter → SQL bridge
+  per `doc/ARCHITECTURE.md` §5.3 and the post-filter caveat in D-12).
 - … then the tables side, starting from `CreateTableBucket` (forces
   Lakekeeper + Postgres into the compose graph; uncomment the deferred
   service blocks in `docker-compose.yml` and add the bootstrap one-shots

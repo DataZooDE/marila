@@ -1,13 +1,14 @@
 //! Wire-shape DTOs for the `s3vectors` AWS-JSON façade.
 //!
 //! Field names match the lowercase-camelCase shapes captured live
-//! (CLAUDE.md C-2). `serde(rename_all = "camelCase")` would *almost*
-//! work but Smithy's `camelCase` for `vectorBucketName` actually maps
-//! to `vector_bucket_name` in Rust → `vectorBucketName` on the wire,
-//! which is what we want, so we use `rename_all`.
+//! (CLAUDE.md C-2, C-2a, C-2b).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// CreateVectorBucket
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +22,10 @@ pub struct CreateVectorBucketOutput {
     pub vector_bucket_arn: String,
 }
 
+// ---------------------------------------------------------------------------
+// ListVectorBuckets
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ListVectorBucketsInput {
@@ -33,6 +38,8 @@ pub struct ListVectorBucketsInput {
 #[serde(rename_all = "camelCase")]
 pub struct ListVectorBucketsOutput {
     pub vector_buckets: Vec<VectorBucketSummary>,
+    /// **Absent** (not `null`) when there are no further pages — matches
+    /// the AWS wire shape (CLAUDE.md C-2b).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_token: Option<String>,
 }
@@ -44,7 +51,6 @@ pub struct VectorBucketSummary {
     pub vector_bucket_arn: String,
     /// Epoch-seconds as a JSON number — the `restJson1` default and the
     /// shape S3 Vectors actually sends on the wire (CLAUDE.md C-2a).
-    /// The `aws` CLI re-renders this as ISO 8601, which is misleading.
     pub creation_time: i64,
 }
 
@@ -58,8 +64,70 @@ impl VectorBucketSummary {
     }
 }
 
-#[derive(Debug, Deserialize)]
+// ---------------------------------------------------------------------------
+// GetVectorBucket
+// ---------------------------------------------------------------------------
+
+/// Either `vectorBucketName` or `vectorBucketArn` may be supplied — clients
+/// pick exactly one. The handler treats "neither" / "both" as ValidationException.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GetVectorBucketInput {
+    pub vector_bucket_name: Option<String>,
+    pub vector_bucket_arn: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeleteVectorBucketInput {
+pub struct GetVectorBucketOutput {
+    pub vector_bucket: VectorBucketDescription,
+}
+
+/// The fully-populated bucket struct AWS returns from Get/GetByArn —
+/// includes the always-present `encryptionConfiguration` (CLAUDE.md C-2b).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VectorBucketDescription {
     pub vector_bucket_name: String,
+    pub vector_bucket_arn: String,
+    pub creation_time: i64,
+    pub encryption_configuration: EncryptionConfiguration,
+}
+
+impl VectorBucketDescription {
+    pub fn from_row(name: String, arn: String, created_at: DateTime<Utc>) -> Self {
+        Self {
+            vector_bucket_name: name,
+            vector_bucket_arn: arn,
+            creation_time: created_at.timestamp(),
+            encryption_configuration: EncryptionConfiguration::default_sse_s3(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptionConfiguration {
+    pub sse_type: String,
+}
+
+impl EncryptionConfiguration {
+    /// SSE-S3, AES-256 — the default AWS applies when CreateVectorBucket
+    /// is called without an `encryptionConfiguration`.
+    pub fn default_sse_s3() -> Self {
+        Self {
+            sse_type: "AES256".to_owned(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DeleteVectorBucket
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DeleteVectorBucketInput {
+    pub vector_bucket_name: Option<String>,
+    pub vector_bucket_arn: Option<String>,
 }
