@@ -250,6 +250,68 @@ services aren't started yet. Add them when we start a tables-side feature.
 - Missing index: HTTP 404 `NotFoundException`,
   body `{"message":"The specified index could not be found"}`.
 
+### C-2e — Data-plane wire shapes: PutVectors / GetVectors / ListVectors / DeleteVectors (probed 2026-05-17)
+
+**PutVectors**
+- Request: `POST /PutVectors` body
+  ```json
+  {
+    "vectorBucketName": "<b>",            // or vectorBucketArn
+    "indexName": "<i>",                   // or indexArn
+    "vectors": [
+      {
+        "key": "<key>",
+        "data": {"float32": [<float>, ...]},   // dim must match index
+        "metadata": {...}                       // optional, free-form JSON
+      },
+      ...
+    ]
+  }
+  ```
+  `vectors` is min 1 / max 500. `key` is 1..=1024 chars.
+- Success: HTTP 200, body `{}`.
+- Validation (dim mismatch): HTTP 400 `ValidationException`, body
+  `{"fieldList":[{"path":"vectors[0]","message":"vector must have length 4, but has length 2"}],"message":"Invalid record for key 'x': vector must have length 4, but has length 2"}`
+  Note the **fieldList** detail — restJson1 standard shape for
+  per-field errors. We may simplify to top-level `message` only.
+
+**GetVectors**
+- Request: `POST /GetVectors` body
+  `{"vectorBucketName":"<b>", "indexName":"<i>", "keys":["k1","k2"], "returnData": bool, "returnMetadata": bool}`.
+  Both `returnData` and `returnMetadata` default to `false`.
+- Success: `{"vectors":[{"key":"k1","data":{"float32":[...]},"metadata":{...}}, ...]}`.
+- **Missing keys are silently omitted** — no error. The response is
+  shorter than the request.
+- **Order is indeterminate** — don't assume request order.
+- **float32 round-trip widens precision** in the JSON — e.g. `0.9`
+  becomes `0.8999999761581421` because the value goes f64→f32→f64.
+
+**ListVectors**
+- Request: `POST /ListVectors` body
+  `{"vectorBucketName":"<b>", "indexName":"<i>", "maxResults": N, "nextToken": "...", "returnData": bool, "returnMetadata": bool, "segmentCount": N, "segmentIndex": N}`.
+  Segment-* params are for parallel-scan and out of scope for marila.
+- Success: `{"vectors":[{key, data?, metadata?}, ...], "nextToken":"..."}`.
+- Without `returnData/returnMetadata`, summary items are just `{"key":"..."}`.
+- AWS's pagination is more aggressive than ours: requesting
+  maxResults=1 against an index with 4 vectors may return
+  `{"vectors":[], "nextToken":"..."}` — i.e. an **empty page with a
+  cursor** is valid. Clients must loop until `nextToken` is absent.
+
+**DeleteVectors**
+- Request: `POST /DeleteVectors` body
+  `{"vectorBucketName":"<b>", "indexName":"<i>", "keys":["k1","k2"]}`.
+- Success: HTTP 200, body `{}`. **No error for missing keys** —
+  delete is silently idempotent.
+
+**Data-plane NotFound collapse**
+- ALL four data-plane ops return the same error body for both
+  "bucket doesn't exist" AND "index doesn't exist within bucket":
+  `x-amzn-errortype: NotFoundException`, body
+  `{"message":"The specified index could not be found"}`.
+  AWS doesn't expose the distinction. Our handlers must emit the
+  **index** message even when the marila state knows only the bucket
+  is missing.
+
 ### C-8 — Test-bucket cleanup must run on the test's own tokio runtime
 
 First attempt at cleanup used a sync `Drop` impl that spun up a brand-new
@@ -299,6 +361,12 @@ Use an async scope helper instead.
 | `GetIndex` missing → `NotFoundException` (index body) | ✅ done | `*_get_index_missing_is_not_found` |
 | `DeleteIndex` happy path (then-gone via GetIndex 404) | ✅ done | `*_delete_index_then_get_is_not_found` |
 | `DeleteIndex` missing → `NotFoundException` (index body) | ✅ done | `*_delete_missing_index_is_not_found` |
+| `PutVectors` / `GetVectors` round-trip (incl. silent-omit of missing keys) | ✅ done | `tests/data_plane.rs::*_put_then_get_round_trips` |
+| `DeleteVectors` silently idempotent (mixed-existing/missing keys) | ✅ done | `*_delete_vectors_is_silently_idempotent` |
+| `ListVectors` w/ `maxResults`/`nextToken` pagination (loop-until-absent) | ✅ done | `*_list_vectors_paginates` |
+| `PutVectors` missing index → `NotFoundException` (collapsed bucket/index) | ✅ done | `*_put_vectors_on_missing_index_is_not_found` |
+| `PutVectors` dim mismatch → `ValidationException` | ✅ done | `*_put_vectors_dim_mismatch_is_validation` |
+| `GetVectors` returns metadata when `returnMetadata=true` | ✅ done | `*_get_vectors_returns_metadata_when_requested` |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
 `core`, `storage`, `vectors`, `integration_tests`. Tables side
@@ -316,13 +384,15 @@ recipe:
 4. Refactor, commit.
 
 Suggested order (low risk → higher):
-- `ListIndexes` + `GetIndex` standalone contract tests (mirrors the
-  bucket-CRUD pattern; `DeleteIndex` is already implemented and used
-  by cleanup but lacks its own contract test).
-- `PutVectors` / `GetVectors` / `DeleteVectors` / `ListVectors` (the
-  data-plane on top of `vec_<b>_<i>` backing tables).
 - `QueryVectors` (the headline op — needs the Mongo-filter → SQL bridge
-  per `doc/ARCHITECTURE.md` §5.3 and the post-filter caveat in D-12).
+  per `doc/ARCHITECTURE.md` §5.3 and the post-filter caveat in
+  `doc/DISCOVERIES.md` D-12). Will likely surface DuckDB VSS recall
+  divergence from AWS under filter — document deviations in a new
+  `doc/GAP_ANALYSIS.md` rather than over-engineering the fix.
+- Add a RustFS snapshot path for `PutVectors` per FV-4 (today marila
+  stores vectors only in DuckDB; AWS contract is satisfied but the
+  durability promise — "RustFS is the source of truth" — isn't).
+  Track as `doc/GAP_ANALYSIS.md` entry until implemented.
 - … then the tables side, starting from `CreateTableBucket` (forces
   Lakekeeper + Postgres into the compose graph; uncomment the deferred
   service blocks in `docker-compose.yml` and add the bootstrap one-shots

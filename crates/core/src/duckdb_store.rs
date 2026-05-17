@@ -2,12 +2,12 @@ use std::{path::Path, sync::Mutex};
 
 use anyhow::Context;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use duckdb::{Connection, params};
+use duckdb::{Connection, OptionalExt, params};
 
 use crate::{
     state::{
         DistanceMetric, IndexPage, IndexRow, StateError, StateStore, VectorBucketPage,
-        VectorBucketRow,
+        VectorBucketRow, VectorPage, VectorRead, VectorWrite,
     },
     vss,
 };
@@ -388,6 +388,252 @@ impl StateStore for DuckDbStateStore {
         let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS {table};"));
         Ok(())
     }
+
+    fn put_vectors(
+        &self,
+        bucket: &str,
+        index: &str,
+        vectors: &[VectorWrite],
+    ) -> Result<(), StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let (table, dim) = index_table_and_dim(&conn, bucket, index)?;
+
+        // Defence-in-depth dim check — the handler validates too, but
+        // direct callers (tests) might skip that.
+        for v in vectors {
+            if v.data.len() != dim as usize {
+                return Err(StateError::DimensionMismatch {
+                    got: v.data.len(),
+                    expected: dim as usize,
+                });
+            }
+        }
+
+        // INSERT OR REPLACE so duplicate keys overwrite (mirrors the
+        // AWS PutVectors "upsert" semantics).
+        // FLOAT[N] doesn't have a Rust binding in duckdb-rs, so we
+        // splice a `[..]::FLOAT[N]` literal into the SQL. Values are
+        // floats so SQL-injection surface is just the literal grammar
+        // — `format_float_array_literal` rejects non-finite values.
+        for v in vectors {
+            let vec_lit = format_float_array_literal(&v.data, dim)?;
+            let meta_json = v
+                .metadata
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .context("serialise vector metadata")?;
+            conn.execute(
+                &format!(
+                    "INSERT OR REPLACE INTO {table} (key, vec, meta) VALUES (?, {vec_lit}, ?::JSON)"
+                ),
+                params![v.key, meta_json],
+            )
+            .context("insert vector")?;
+        }
+        Ok(())
+    }
+
+    fn get_vectors(
+        &self,
+        bucket: &str,
+        index: &str,
+        keys: &[String],
+        return_data: bool,
+        return_metadata: bool,
+    ) -> Result<Vec<VectorRead>, StateError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let (table, _dim) = index_table_and_dim(&conn, bucket, index)?;
+
+        let placeholders = vec!["?"; keys.len()].join(",");
+        // We cast vec / meta to VARCHAR because duckdb-rs has no
+        // FromSql for Vec<f32> or serde_json::Value (D-4 / common
+        // knowledge). The handler decides whether to actually parse.
+        let sql = format!(
+            "SELECT key, CAST(vec AS VARCHAR), CAST(meta AS VARCHAR) FROM {table} WHERE key IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql).context("prepare get_vectors")?;
+        let key_params: Vec<&dyn duckdb::ToSql> =
+            keys.iter().map(|k| k as &dyn duckdb::ToSql).collect();
+        let rows = stmt
+            .query_map(key_params.as_slice(), |row| {
+                let key: String = row.get(0)?;
+                let vec_str: Option<String> = row.get(1)?;
+                let meta_str: Option<String> = row.get(2)?;
+                Ok((key, vec_str, meta_str))
+            })
+            .context("execute get_vectors")?;
+
+        let mut out = Vec::with_capacity(keys.len());
+        for row in rows {
+            let (key, vec_str, meta_str) = row.context("read get_vectors row")?;
+            let data = if return_data {
+                parse_vec(vec_str)?
+            } else {
+                None
+            };
+            let metadata = if return_metadata {
+                parse_meta(meta_str)?
+            } else {
+                None
+            };
+            out.push(VectorRead {
+                key,
+                data,
+                metadata,
+            });
+        }
+        Ok(out)
+    }
+
+    fn list_vectors_page(
+        &self,
+        bucket: &str,
+        index: &str,
+        after: Option<&str>,
+        max: usize,
+        return_data: bool,
+        return_metadata: bool,
+    ) -> Result<VectorPage, StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let (table, _dim) = index_table_and_dim(&conn, bucket, index)?;
+
+        let limit = max.saturating_add(1) as i64;
+        let sql = format!(
+            "SELECT key, CAST(vec AS VARCHAR), CAST(meta AS VARCHAR)
+               FROM {table}
+              WHERE (? IS NULL OR key > ?)
+              ORDER BY key
+              LIMIT ?"
+        );
+        let mut stmt = conn.prepare(&sql).context("prepare list_vectors page")?;
+
+        let rows = stmt
+            .query_map(params![after, after, limit], |row| {
+                let key: String = row.get(0)?;
+                let vec_str: Option<String> = row.get(1)?;
+                let meta_str: Option<String> = row.get(2)?;
+                Ok((key, vec_str, meta_str))
+            })
+            .context("execute list_vectors page")?;
+
+        let mut decoded = Vec::new();
+        for row in rows {
+            let (key, vec_str, meta_str) = row.context("read list_vectors row")?;
+            let data = if return_data {
+                parse_vec(vec_str)?
+            } else {
+                None
+            };
+            let metadata = if return_metadata {
+                parse_meta(meta_str)?
+            } else {
+                None
+            };
+            decoded.push(VectorRead {
+                key,
+                data,
+                metadata,
+            });
+        }
+
+        let next = if decoded.len() as i64 > max as i64 {
+            decoded.truncate(max);
+            decoded.last().map(|r| r.key.clone())
+        } else {
+            None
+        };
+
+        Ok(VectorPage {
+            rows: decoded,
+            next,
+        })
+    }
+
+    fn delete_vectors(&self, bucket: &str, index: &str, keys: &[String]) -> Result<(), StateError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let (table, _dim) = index_table_and_dim(&conn, bucket, index)?;
+
+        let placeholders = vec!["?"; keys.len()].join(",");
+        let sql = format!("DELETE FROM {table} WHERE key IN ({placeholders})");
+        let key_params: Vec<&dyn duckdb::ToSql> =
+            keys.iter().map(|k| k as &dyn duckdb::ToSql).collect();
+        conn.execute(&sql, key_params.as_slice())
+            .context("execute delete_vectors")?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Data-plane helpers
+// ---------------------------------------------------------------------------
+
+/// Look up the backing-table identifier *and* declared dimension for
+/// `(bucket, index)`. Returns [`StateError::NotFound`] when the index
+/// row doesn't exist — the data-plane handlers fold that into the
+/// AWS "index could not be found" body.
+fn index_table_and_dim(
+    conn: &Connection,
+    bucket: &str,
+    index: &str,
+) -> Result<(String, u32), StateError> {
+    let dim: Option<i32> = conn
+        .query_row(
+            "SELECT dimension FROM state.vector_indexes WHERE bucket_name = ? AND name = ?",
+            params![bucket, index],
+            |r| r.get(0),
+        )
+        .optional()
+        .context("probe index for table lookup")?;
+    match dim {
+        None => Err(StateError::NotFound(format!("{bucket}/{index}"))),
+        Some(d) => Ok((backing_table_ident(bucket, index), d as u32)),
+    }
+}
+
+/// Build a DuckDB literal of the form `[1.0, 2.0, ...]::FLOAT[N]`.
+/// Rejects non-finite values (NaN / Infinity) per the AWS contract
+/// (CLAUDE.md C-2e).
+fn format_float_array_literal(data: &[f32], dim: u32) -> Result<String, StateError> {
+    debug_assert_eq!(data.len(), dim as usize);
+    let mut s = String::with_capacity(data.len() * 8 + 32);
+    s.push('[');
+    for (i, v) in data.iter().enumerate() {
+        if !v.is_finite() {
+            return Err(StateError::Internal(anyhow::anyhow!(
+                "vector contains a non-finite value at position {i}: {v}"
+            )));
+        }
+        if i > 0 {
+            s.push(',');
+        }
+        // {:?} preserves the full round-trip precision for f32.
+        s.push_str(&format!("{v:?}"));
+    }
+    s.push_str("]::FLOAT[");
+    s.push_str(&dim.to_string());
+    s.push(']');
+    Ok(s)
+}
+
+fn parse_vec(s: Option<String>) -> Result<Option<Vec<f32>>, StateError> {
+    let Some(s) = s else { return Ok(None) };
+    let v: Vec<f32> =
+        serde_json::from_str(&s).with_context(|| format!("parse vec literal `{s}`"))?;
+    Ok(Some(v))
+}
+
+fn parse_meta(s: Option<String>) -> Result<Option<serde_json::Value>, StateError> {
+    let Some(s) = s else { return Ok(None) };
+    let v: serde_json::Value =
+        serde_json::from_str(&s).with_context(|| format!("parse meta JSON `{s}`"))?;
+    Ok(Some(v))
 }
 
 fn row_to_bucket(row: &duckdb::Row<'_>) -> duckdb::Result<VectorBucketRow> {
@@ -592,6 +838,152 @@ mod tests {
             .list_indexes_page("nobucket", None, None, 10)
             .unwrap_err();
         assert!(matches!(err, StateError::NotFound(s) if s == "nobucket"));
+    }
+
+    fn write(key: &str, vec: Vec<f32>, meta: Option<serde_json::Value>) -> VectorWrite {
+        VectorWrite {
+            key: key.to_owned(),
+            data: vec,
+            metadata: meta,
+        }
+    }
+
+    #[test]
+    fn put_then_get_round_trips_data_and_meta() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        make_index(&store, "b", "i", 4);
+
+        store
+            .put_vectors(
+                "b",
+                "i",
+                &[
+                    write(
+                        "a",
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        Some(serde_json::json!({"k":"v"})),
+                    ),
+                    write("c", vec![0.0, 1.0, 0.0, 0.0], None),
+                ],
+            )
+            .unwrap();
+
+        let got = store
+            .get_vectors(
+                "b",
+                "i",
+                &["a".into(), "c".into(), "missing".into()],
+                true,
+                true,
+            )
+            .unwrap();
+        assert_eq!(got.len(), 2, "missing keys must be silently omitted");
+        let by_key: std::collections::HashMap<_, _> =
+            got.into_iter().map(|v| (v.key.clone(), v)).collect();
+        assert_eq!(by_key["a"].data.as_deref().unwrap().len(), 4);
+        assert_eq!(by_key["a"].metadata, Some(serde_json::json!({"k":"v"})));
+        assert!(
+            by_key["c"].metadata.is_none(),
+            "NULL meta round-trips as None"
+        );
+    }
+
+    #[test]
+    fn put_vectors_dim_mismatch_errors() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        make_index(&store, "b", "i", 4);
+        let err = store
+            .put_vectors("b", "i", &[write("x", vec![1.0, 2.0], None)])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StateError::DimensionMismatch {
+                got: 2,
+                expected: 4
+            }
+        ));
+    }
+
+    #[test]
+    fn data_plane_on_missing_index_is_not_found() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        for err in [
+            store
+                .put_vectors("b", "ghost", &[write("a", vec![1.0; 4], None)])
+                .unwrap_err(),
+            store
+                .get_vectors("b", "ghost", &["a".into()], false, false)
+                .unwrap_err(),
+            store
+                .delete_vectors("b", "ghost", &["a".into()])
+                .unwrap_err(),
+            store
+                .list_vectors_page("b", "ghost", None, 10, false, false)
+                .unwrap_err(),
+        ] {
+            assert!(matches!(err, StateError::NotFound(s) if s == "b/ghost"));
+        }
+    }
+
+    #[test]
+    fn delete_vectors_is_silently_idempotent() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        make_index(&store, "b", "i", 4);
+        store
+            .put_vectors("b", "i", &[write("a", vec![1.0; 4], None)])
+            .unwrap();
+        // First delete removes a; second delete is a no-op (matches AWS).
+        store
+            .delete_vectors("b", "i", &["a".into(), "never".into()])
+            .unwrap();
+        store.delete_vectors("b", "i", &["a".into()]).unwrap();
+        let listed = store
+            .list_vectors_page("b", "i", None, 100, false, false)
+            .unwrap();
+        assert!(listed.rows.is_empty());
+    }
+
+    #[test]
+    fn list_vectors_page_cursor_round_trip() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        make_index(&store, "b", "i", 4);
+        for k in ["a", "b", "c", "d", "e"] {
+            store
+                .put_vectors("b", "i", &[write(k, vec![1.0; 4], None)])
+                .unwrap();
+        }
+
+        let p1 = store
+            .list_vectors_page("b", "i", None, 2, false, false)
+            .unwrap();
+        assert_eq!(
+            p1.rows.iter().map(|r| &*r.key).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(p1.next.as_deref(), Some("b"));
+
+        let p2 = store
+            .list_vectors_page("b", "i", p1.next.as_deref(), 2, false, false)
+            .unwrap();
+        assert_eq!(
+            p2.rows.iter().map(|r| &*r.key).collect::<Vec<_>>(),
+            vec!["c", "d"]
+        );
+        assert_eq!(p2.next.as_deref(), Some("d"));
+
+        let p3 = store
+            .list_vectors_page("b", "i", p2.next.as_deref(), 2, false, false)
+            .unwrap();
+        assert_eq!(
+            p3.rows.iter().map(|r| &*r.key).collect::<Vec<_>>(),
+            vec!["e"]
+        );
+        assert!(p3.next.is_none());
     }
 
     #[test]

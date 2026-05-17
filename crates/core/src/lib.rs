@@ -9,4 +9,5 @@ mod vss;
 pub use duckdb_store::DuckDbStateStore;
 pub use state::{
     DistanceMetric, IndexPage, IndexRow, StateError, StateStore, VectorBucketPage, VectorBucketRow,
+    VectorPage, VectorRead, VectorWrite,
 };

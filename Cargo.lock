@@ -2245,6 +2245,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "duckdb",
+ "serde_json",
  "thiserror",
  "tracing",
 ]
@@ -2257,7 +2258,9 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3vectors",
+ "aws-smithy-types",
  "futures",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

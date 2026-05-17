@@ -63,6 +63,12 @@ pub enum StateError {
     #[error("vector bucket `{0}` not found")]
     NotFound(String),
 
+    /// Vector data length didn't match the index's configured
+    /// dimension. Carries `(got, expected)` so the handler can shape
+    /// the AWS message exactly.
+    #[error("vector dimension mismatch: got {got}, expected {expected}")]
+    DimensionMismatch { got: usize, expected: usize },
+
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -85,6 +91,35 @@ pub struct VectorBucketPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexPage {
     pub rows: Vec<IndexRow>,
+    pub next: Option<String>,
+}
+
+/// One vector to write into a backing table.
+#[derive(Debug, Clone)]
+pub struct VectorWrite {
+    pub key: String,
+    pub data: Vec<f32>,
+    /// Free-form JSON metadata. `None` is serialised as NULL in DuckDB.
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// One vector returned from a backing table.
+///
+/// `data` / `metadata` are `None` when the caller asked us not to
+/// materialise them — saves a round-trip through serde for List-large
+/// scans that only need keys.
+#[derive(Debug, Clone)]
+pub struct VectorRead {
+    pub key: String,
+    pub data: Option<Vec<f32>>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Cursor-paginated page of vectors. `next` is the last key on the page
+/// (the cursor is opaque to the wire — clients just echo it back).
+#[derive(Debug, Clone)]
+pub struct VectorPage {
+    pub rows: Vec<VectorRead>,
     pub next: Option<String>,
 }
 
@@ -158,4 +193,53 @@ pub trait StateStore: Send + Sync {
     /// Drop an index and its backing table. Idempotent w.r.t. the
     /// backing table — missing index returns `StateError::NotFound`.
     fn delete_index(&self, bucket: &str, index: &str) -> Result<(), StateError>;
+
+    // -----------------------------------------------------------------
+    // Data plane — operates on the backing table `vec_<b>__<i>`.
+    // All four methods return `StateError::NotFound` when the index
+    // doesn't exist; the handler maps that to AWS's
+    // "The specified index could not be found" body (CLAUDE.md C-2e).
+    // -----------------------------------------------------------------
+
+    /// Upsert one or more vectors. AWS treats PutVectors as a
+    /// "replace if key collides" operation; we mirror that with
+    /// `INSERT OR REPLACE`.
+    ///
+    /// Each vector's `data.len()` must match the index's `dimension`;
+    /// callers should validate before calling. The store checks anyway
+    /// as defence-in-depth and returns a [`StateError::DimensionMismatch`].
+    fn put_vectors(
+        &self,
+        bucket: &str,
+        index: &str,
+        vectors: &[VectorWrite],
+    ) -> Result<(), StateError>;
+
+    /// Fetch vectors by key. Missing keys are silently omitted from the
+    /// returned `Vec` — that matches the AWS contract (CLAUDE.md C-2e).
+    fn get_vectors(
+        &self,
+        bucket: &str,
+        index: &str,
+        keys: &[String],
+        return_data: bool,
+        return_metadata: bool,
+    ) -> Result<Vec<VectorRead>, StateError>;
+
+    /// Cursor-paginated scan of an index. `after` is exclusive
+    /// (echo back `page.next` for the next call). `max` is clamped by
+    /// the caller.
+    fn list_vectors_page(
+        &self,
+        bucket: &str,
+        index: &str,
+        after: Option<&str>,
+        max: usize,
+        return_data: bool,
+        return_metadata: bool,
+    ) -> Result<VectorPage, StateError>;
+
+    /// Delete one or more vectors by key. Missing keys are not an
+    /// error — AWS's contract is silently idempotent (CLAUDE.md C-2e).
+    fn delete_vectors(&self, bucket: &str, index: &str, keys: &[String]) -> Result<(), StateError>;
 }

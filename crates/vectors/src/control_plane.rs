@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{Json, extract::State};
 use marila_aws_compat::AwsError;
-use marila_core::{DistanceMetric, StateError, StateStore};
+use marila_core::{DistanceMetric, StateError, StateStore, VectorWrite};
 use marila_storage::{BucketStore, StorageError};
 use tracing::instrument;
 
@@ -12,19 +12,26 @@ use crate::{
     arn::{parse_bucket_name_from_arn, parse_index_from_arn, vector_bucket_arn, vector_index_arn},
     state::{
         CreateIndexInput, CreateIndexOutput, CreateVectorBucketInput, CreateVectorBucketOutput,
-        DeleteIndexInput, DeleteVectorBucketInput, GetIndexInput, GetIndexOutput,
-        GetVectorBucketInput, GetVectorBucketOutput, IndexDescription, IndexSummary,
-        ListIndexesInput, ListIndexesOutput, ListVectorBucketsInput, ListVectorBucketsOutput,
-        VectorBucketDescription, VectorBucketSummary,
+        DeleteIndexInput, DeleteVectorBucketInput, DeleteVectorsInput, GetIndexInput,
+        GetIndexOutput, GetVectorBucketInput, GetVectorBucketOutput, GetVectorsInput,
+        GetVectorsOutput, IndexDescription, IndexSummary, ListIndexesInput, ListIndexesOutput,
+        ListVectorBucketsInput, ListVectorBucketsOutput, ListVectorsInput, ListVectorsOutput,
+        PutVectorsInput, PutVectorsOutput, ReturnedVector, VectorBucketDescription,
+        VectorBucketSummary,
     },
 };
 
-/// Default + ceiling for `ListVectorBuckets.maxResults`. AWS doesn't
-/// publish a hard ceiling on the page size; 500 is a reasonable cap
-/// that still fits comfortably in a single response and matches the
-/// "small batch" limits elsewhere in the API (e.g. `PutVectors` ≤ 500).
+/// Default + ceiling for `List*.maxResults`. AWS doesn't publish a hard
+/// ceiling on the page size; 500 is a reasonable cap that still fits
+/// comfortably in a single response and matches the "small batch"
+/// limits elsewhere in the API (e.g. `PutVectors` ≤ 500).
 const DEFAULT_LIST_PAGE_SIZE: u32 = 100;
 const MAX_LIST_PAGE_SIZE: u32 = 500;
+
+/// Max vectors per PutVectors / GetVectors / DeleteVectors call.
+const MAX_VECTOR_BATCH: usize = 500;
+/// Max keys per GetVectors / DeleteVectors call (AWS limit per docs).
+const MAX_KEY_BATCH: usize = 500;
 
 /// Message body AWS sends on bucket-not-found (CLAUDE.md C-2b).
 const BUCKET_NOT_FOUND_MESSAGE: &str = "The specified vector bucket could not be found";
@@ -319,6 +326,207 @@ pub async fn delete_index(
 }
 
 // ---------------------------------------------------------------------------
+// PutVectors
+// ---------------------------------------------------------------------------
+
+#[instrument(skip(app, input))]
+pub async fn put_vectors(
+    State(app): State<AppState>,
+    Json(input): Json<PutVectorsInput>,
+) -> Result<Json<PutVectorsOutput>, AwsError> {
+    let (bucket, index) = resolve_data_plane_target(
+        &input.vector_bucket_name,
+        &input.index_name,
+        &input.index_arn,
+    )?;
+
+    if input.vectors.is_empty() {
+        return Err(AwsError::Validation(
+            "vectors must contain at least 1 item".into(),
+        ));
+    }
+    if input.vectors.len() > MAX_VECTOR_BATCH {
+        return Err(AwsError::Validation(format!(
+            "vectors must contain at most {MAX_VECTOR_BATCH} items (got {})",
+            input.vectors.len()
+        )));
+    }
+
+    // Translate the wire shape (tagged union) into the state-store
+    // shape, validating each item's key length and the presence of the
+    // `float32` variant. Per CLAUDE.md C-2e, AWS rejects non-finite
+    // values; the state layer's `format_float_array_literal` doubles
+    // up on this defence in depth.
+    let mut writes: Vec<VectorWrite> = Vec::with_capacity(input.vectors.len());
+    for (idx, item) in input.vectors.into_iter().enumerate() {
+        validate_vector_key(&item.key, idx)?;
+        let data = item.data.float32.ok_or_else(|| {
+            AwsError::Validation(format!(
+                "vectors[{idx}].data must contain a `float32` variant"
+            ))
+        })?;
+        if data.iter().any(|v| !v.is_finite()) {
+            return Err(AwsError::Validation(format!(
+                "vectors[{idx}].data contains a non-finite value (NaN/Infinity not allowed)"
+            )));
+        }
+        writes.push(VectorWrite {
+            key: item.key,
+            data,
+            metadata: item.metadata,
+        });
+    }
+
+    run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index.clone();
+        move |s| s.put_vectors(&bucket, &index, &writes)
+    })
+    .await
+    .map_err(data_plane_error)?;
+
+    Ok(Json(PutVectorsOutput::default()))
+}
+
+// ---------------------------------------------------------------------------
+// GetVectors
+// ---------------------------------------------------------------------------
+
+#[instrument(skip(app, input))]
+pub async fn get_vectors(
+    State(app): State<AppState>,
+    Json(input): Json<GetVectorsInput>,
+) -> Result<Json<GetVectorsOutput>, AwsError> {
+    let (bucket, index) = resolve_data_plane_target(
+        &input.vector_bucket_name,
+        &input.index_name,
+        &input.index_arn,
+    )?;
+
+    if input.keys.is_empty() {
+        return Err(AwsError::Validation(
+            "keys must contain at least 1 item".into(),
+        ));
+    }
+    if input.keys.len() > MAX_KEY_BATCH {
+        return Err(AwsError::Validation(format!(
+            "keys must contain at most {MAX_KEY_BATCH} items (got {})",
+            input.keys.len()
+        )));
+    }
+    for (idx, k) in input.keys.iter().enumerate() {
+        validate_vector_key(k, idx)?;
+    }
+
+    let return_data = input.return_data.unwrap_or(false);
+    let return_metadata = input.return_metadata.unwrap_or(false);
+    let rows = run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index.clone();
+        let keys = input.keys.clone();
+        move |s| s.get_vectors(&bucket, &index, &keys, return_data, return_metadata)
+    })
+    .await
+    .map_err(data_plane_error)?;
+
+    Ok(Json(GetVectorsOutput {
+        vectors: rows.into_iter().map(ReturnedVector::from_read).collect(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// ListVectors
+// ---------------------------------------------------------------------------
+
+#[instrument(skip(app, input))]
+pub async fn list_vectors(
+    State(app): State<AppState>,
+    Json(input): Json<ListVectorsInput>,
+) -> Result<Json<ListVectorsOutput>, AwsError> {
+    let (bucket, index) = resolve_data_plane_target(
+        &input.vector_bucket_name,
+        &input.index_name,
+        &input.index_arn,
+    )?;
+
+    let max = input
+        .max_results
+        .unwrap_or(DEFAULT_LIST_PAGE_SIZE)
+        .clamp(1, MAX_LIST_PAGE_SIZE) as usize;
+    let return_data = input.return_data.unwrap_or(false);
+    let return_metadata = input.return_metadata.unwrap_or(false);
+
+    let page = run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index.clone();
+        let after = input.next_token.clone();
+        move |s| {
+            s.list_vectors_page(
+                &bucket,
+                &index,
+                after.as_deref(),
+                max,
+                return_data,
+                return_metadata,
+            )
+        }
+    })
+    .await
+    .map_err(data_plane_error)?;
+
+    Ok(Json(ListVectorsOutput {
+        vectors: page
+            .rows
+            .into_iter()
+            .map(ReturnedVector::from_read)
+            .collect(),
+        next_token: page.next,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// DeleteVectors
+// ---------------------------------------------------------------------------
+
+#[instrument(skip(app, input))]
+pub async fn delete_vectors(
+    State(app): State<AppState>,
+    Json(input): Json<DeleteVectorsInput>,
+) -> Result<Json<serde_json::Value>, AwsError> {
+    let (bucket, index) = resolve_data_plane_target(
+        &input.vector_bucket_name,
+        &input.index_name,
+        &input.index_arn,
+    )?;
+
+    if input.keys.is_empty() {
+        return Err(AwsError::Validation(
+            "keys must contain at least 1 item".into(),
+        ));
+    }
+    if input.keys.len() > MAX_KEY_BATCH {
+        return Err(AwsError::Validation(format!(
+            "keys must contain at most {MAX_KEY_BATCH} items (got {})",
+            input.keys.len()
+        )));
+    }
+    for (idx, k) in input.keys.iter().enumerate() {
+        validate_vector_key(k, idx)?;
+    }
+
+    run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index.clone();
+        let keys = input.keys.clone();
+        move |s| s.delete_vectors(&bucket, &index, &keys)
+    })
+    .await
+    .map_err(data_plane_error)?;
+
+    Ok(Json(serde_json::json!({})))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -436,6 +644,61 @@ fn validate_prefix(prefix: &str) -> Result<(), AwsError> {
     Ok(())
 }
 
+fn validate_vector_key(key: &str, idx: usize) -> Result<(), AwsError> {
+    let n = key.chars().count();
+    if !(1..=1024).contains(&n) {
+        return Err(AwsError::Validation(format!(
+            "vectors[{idx}].key length must be between 1 and 1024 characters (got {n})"
+        )));
+    }
+    Ok(())
+}
+
+/// Resolve a data-plane target (`PutVectors` etc.) to `(bucket, index)`.
+///
+/// Accepts either `indexArn` standalone, or `(vectorBucketName, indexName)`
+/// — same combination rules as `GetIndex` (CLAUDE.md C-2e).
+fn resolve_data_plane_target(
+    bucket_name: &Option<String>,
+    index_name: &Option<String>,
+    index_arn: &Option<String>,
+) -> Result<(String, String), AwsError> {
+    match (
+        index_arn.as_deref(),
+        bucket_name.as_deref(),
+        index_name.as_deref(),
+    ) {
+        (Some(arn), None, None) => {
+            let (b, i) = parse_index_from_arn(arn)?;
+            Ok((b.to_owned(), i.to_owned()))
+        }
+        (None, Some(b), Some(i)) => {
+            validate_bucket_name(b)?;
+            validate_index_name(i)?;
+            Ok((b.to_owned(), i.to_owned()))
+        }
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => Err(AwsError::Validation(
+            "specify indexArn alone, not together with vectorBucketName/indexName".into(),
+        )),
+        _ => Err(AwsError::Validation(
+            "specify indexArn, or both vectorBucketName and indexName".into(),
+        )),
+    }
+}
+
+/// State-error → AWS-error mapping for the data plane.
+///
+/// AWS collapses bucket-not-found and index-not-found into a single
+/// `NotFoundException` with the **index** body text (CLAUDE.md C-2e).
+/// DimensionMismatch becomes ValidationException matching the wire
+/// shape AWS emits.
+fn data_plane_error(e: AwsError) -> AwsError {
+    match e {
+        AwsError::NotFound(_) => AwsError::NotFound(INDEX_NOT_FOUND_MESSAGE.to_owned()),
+        other => other,
+    }
+}
+
 /// Bridge between async axum handlers and the synchronous DuckDB
 /// `StateStore`. Wraps the closure in `spawn_blocking` and maps the
 /// resulting two-layer error into a single `AwsError`.
@@ -458,6 +721,9 @@ fn state_error(e: StateError) -> AwsError {
             "A vector bucket with the name `{n}` already exists"
         )),
         StateError::NotFound(_) => AwsError::NotFound(BUCKET_NOT_FOUND_MESSAGE.to_owned()),
+        StateError::DimensionMismatch { got, expected } => AwsError::Validation(format!(
+            "vector must have length {expected}, but has length {got}"
+        )),
         StateError::Internal(e) => AwsError::Internal {
             message: format!("{e:#}"),
         },

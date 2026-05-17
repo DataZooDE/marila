@@ -263,3 +263,110 @@ impl IndexDescription {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Data-plane DTOs (PutVectors / GetVectors / ListVectors / DeleteVectors)
+// ---------------------------------------------------------------------------
+
+/// `data` is a tagged union — only `float32` is allowed today
+/// (CLAUDE.md C-2e). Wrapping as a struct with `Option<Vec<f32>>` lets
+/// serde reject unknown variants on deserialise and skip the field on
+/// serialise when it's absent.
+#[derive(Debug, Deserialize, Serialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct VectorData {
+    pub float32: Option<Vec<f32>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutVectorsItem {
+    pub key: String,
+    pub data: VectorData,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PutVectorsInput {
+    pub vector_bucket_name: Option<String>,
+    pub index_name: Option<String>,
+    pub index_arn: Option<String>,
+    pub vectors: Vec<PutVectorsItem>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct PutVectorsOutput {}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GetVectorsInput {
+    pub vector_bucket_name: Option<String>,
+    pub index_name: Option<String>,
+    pub index_arn: Option<String>,
+    pub keys: Vec<String>,
+    pub return_data: Option<bool>,
+    pub return_metadata: Option<bool>,
+}
+
+/// Returned vector — `data`/`metadata` are omitted entirely when the
+/// client asked us not to materialise them.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReturnedVector {
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<VectorData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+impl ReturnedVector {
+    pub fn from_read(v: marila_core::VectorRead) -> Self {
+        Self {
+            key: v.key,
+            data: v.data.map(|d| VectorData { float32: Some(d) }),
+            metadata: v.metadata,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetVectorsOutput {
+    pub vectors: Vec<ReturnedVector>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ListVectorsInput {
+    pub vector_bucket_name: Option<String>,
+    pub index_name: Option<String>,
+    pub index_arn: Option<String>,
+    pub max_results: Option<u32>,
+    pub next_token: Option<String>,
+    pub return_data: Option<bool>,
+    pub return_metadata: Option<bool>,
+    // segmentCount / segmentIndex are accepted-but-ignored — parallel
+    // scans aren't part of marila's spike scope.
+    pub segment_count: Option<u32>,
+    pub segment_index: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListVectorsOutput {
+    pub vectors: Vec<ReturnedVector>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DeleteVectorsInput {
+    pub vector_bucket_name: Option<String>,
+    pub index_name: Option<String>,
+    pub index_arn: Option<String>,
+    pub keys: Vec<String>,
+}
