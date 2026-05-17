@@ -6,8 +6,8 @@ use duckdb::{Connection, OptionalExt, params};
 
 use crate::{
     state::{
-        DistanceMetric, IndexPage, IndexRow, QueryHit, StateError, StateStore, VectorBucketPage,
-        VectorBucketRow, VectorPage, VectorRead, VectorWrite,
+        DistanceMetric, IndexPage, IndexRow, QueryHit, StateError, StateStore, TableBucketRow,
+        VectorBucketPage, VectorBucketRow, VectorPage, VectorRead, VectorWrite,
     },
     vss,
 };
@@ -79,6 +79,14 @@ fn migrate(conn: &Connection) -> Result<(), StateError> {
             distance_metric  VARCHAR NOT NULL,
             created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (bucket_name, name)
+        );
+        CREATE TABLE IF NOT EXISTS state.table_buckets (
+            name              VARCHAR PRIMARY KEY,
+            arn               VARCHAR NOT NULL,
+            table_bucket_id   VARCHAR NOT NULL,
+            owner_account_id  VARCHAR NOT NULL,
+            bucket_type       VARCHAR NOT NULL DEFAULT 'customer',
+            created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         "#,
     )
@@ -637,6 +645,103 @@ impl StateStore for DuckDbStateStore {
         }
         Ok(hits)
     }
+
+    fn create_table_bucket(
+        &self,
+        name: &str,
+        arn: &str,
+        owner_account_id: &str,
+    ) -> Result<TableBucketRow, StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let now = Utc::now().naive_utc();
+        let table_bucket_id = uuid::Uuid::new_v4().to_string();
+
+        let res = conn.execute(
+            "INSERT INTO state.table_buckets
+                 (name, arn, table_bucket_id, owner_account_id, bucket_type, created_at)
+             VALUES (?, ?, ?, ?, 'customer', ?)",
+            params![name, arn, table_bucket_id, owner_account_id, now],
+        );
+        match res {
+            Ok(_) => Ok(TableBucketRow {
+                name: name.to_owned(),
+                arn: arn.to_owned(),
+                table_bucket_id,
+                owner_account_id: owner_account_id.to_owned(),
+                bucket_type: "customer".to_owned(),
+                created_at: DateTime::<Utc>::from_naive_utc_and_offset(now, Utc),
+            }),
+            Err(e) if is_duplicate_key(&e) => Err(StateError::AlreadyExists(name.to_owned())),
+            Err(e) => Err(StateError::Internal(
+                anyhow::Error::new(e).context("insert table_bucket row"),
+            )),
+        }
+    }
+
+    fn list_table_buckets(&self) -> Result<Vec<TableBucketRow>, StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, arn, table_bucket_id, owner_account_id, bucket_type, created_at
+                   FROM state.table_buckets
+                  ORDER BY name",
+            )
+            .context("prepare list_table_buckets")?;
+        let rows = stmt
+            .query_map([], row_to_table_bucket)
+            .context("execute list_table_buckets")?
+            .collect::<Result<Vec<_>, _>>()
+            .context("collect list_table_buckets")?;
+        Ok(rows)
+    }
+
+    fn get_table_bucket(&self, name: &str) -> Result<TableBucketRow, StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let res = conn.query_row(
+            "SELECT name, arn, table_bucket_id, owner_account_id, bucket_type, created_at
+               FROM state.table_buckets WHERE name = ?",
+            params![name],
+            row_to_table_bucket,
+        );
+        match res {
+            Ok(row) => Ok(row),
+            Err(duckdb::Error::QueryReturnedNoRows) => Err(StateError::NotFound(name.to_owned())),
+            Err(e) => Err(StateError::Internal(
+                anyhow::Error::new(e).context("select table_bucket"),
+            )),
+        }
+    }
+
+    fn delete_table_bucket(&self, name: &str) -> Result<(), StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let n = conn
+            .execute(
+                "DELETE FROM state.table_buckets WHERE name = ?",
+                params![name],
+            )
+            .context("delete table_bucket row")?;
+        if n == 0 {
+            return Err(StateError::NotFound(name.to_owned()));
+        }
+        Ok(())
+    }
+}
+
+fn row_to_table_bucket(row: &duckdb::Row<'_>) -> duckdb::Result<TableBucketRow> {
+    let name: String = row.get(0)?;
+    let arn: String = row.get(1)?;
+    let table_bucket_id: String = row.get(2)?;
+    let owner_account_id: String = row.get(3)?;
+    let bucket_type: String = row.get(4)?;
+    let created_naive: NaiveDateTime = row.get(5)?;
+    Ok(TableBucketRow {
+        name,
+        arn,
+        table_bucket_id,
+        owner_account_id,
+        bucket_type,
+        created_at: DateTime::<Utc>::from_naive_utc_and_offset(created_naive, Utc),
+    })
 }
 
 // ---------------------------------------------------------------------------

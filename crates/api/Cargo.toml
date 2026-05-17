@@ -14,6 +14,7 @@ path = "src/main.rs"
 marila-aws-compat.workspace = true
 marila-core.workspace = true
 marila-storage.workspace = true
+marila-tables.workspace = true
 marila-vectors.workspace = true
 
 axum.workspace = true

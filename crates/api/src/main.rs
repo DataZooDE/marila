@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use axum::{Router, routing::get};
 use marila_core::DuckDbStateStore;
 use marila_storage::{S3BucketStore, S3Config};
-use marila_vectors::AppState;
+use marila_tables::AppState as TablesAppState;
+use marila_vectors::AppState as VectorsAppState;
 use tokio::net::TcpListener;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::info;
@@ -26,16 +27,22 @@ async fn main() -> Result<()> {
         .context("connect to s3 backend")?,
     );
 
-    let app_state = AppState {
-        state,
+    let vectors_state = VectorsAppState {
+        state: state.clone(),
         storage,
+        region: cfg.s3_region.clone(),
+        account_id: cfg.account_id.clone(),
+    };
+    let tables_state = TablesAppState {
+        state: state.clone(),
         region: cfg.s3_region.clone(),
         account_id: cfg.account_id.clone(),
     };
 
     let app = Router::new()
         .route("/health", get(health))
-        .merge(marila_vectors::router(app_state))
+        .merge(marila_vectors::router(vectors_state))
+        .merge(marila_tables::router(tables_state))
         .layer(
             TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::new().include_headers(true)),
         );

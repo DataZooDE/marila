@@ -123,6 +123,22 @@ pub struct VectorPage {
     pub next: Option<String>,
 }
 
+/// One state row for an s3tables table bucket.
+///
+/// Distinct from [`VectorBucketRow`] — table buckets have UUID,
+/// owner-account, and a `bucket_type` ("customer"|"aws") per AWS's
+/// wire shape (CLAUDE.md C-9). They share zero schema with vector
+/// buckets so they live in their own table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableBucketRow {
+    pub name: String,
+    pub arn: String,
+    pub table_bucket_id: String,
+    pub owner_account_id: String,
+    pub bucket_type: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// One nearest-neighbour query result.
 #[derive(Debug, Clone)]
 pub struct QueryHit {
@@ -274,4 +290,26 @@ pub trait StateStore: Send + Sync {
         oversample: usize,
         where_sql: Option<&str>,
     ) -> Result<Vec<QueryHit>, StateError>;
+
+    // -----------------------------------------------------------------
+    // s3tables — table-bucket control plane (CLAUDE.md C-9).
+    // Schema and behaviour are separate from vector buckets so that
+    // future tables-side work (namespaces, tables, Lakekeeper proxy)
+    // doesn't bleed into the vectors schema.
+    // -----------------------------------------------------------------
+
+    fn create_table_bucket(
+        &self,
+        name: &str,
+        arn: &str,
+        owner_account_id: &str,
+    ) -> Result<TableBucketRow, StateError>;
+
+    fn list_table_buckets(&self) -> Result<Vec<TableBucketRow>, StateError>;
+
+    /// Fetch a table bucket by name. Returns [`StateError::NotFound`]
+    /// when missing.
+    fn get_table_bucket(&self, name: &str) -> Result<TableBucketRow, StateError>;
+
+    fn delete_table_bucket(&self, name: &str) -> Result<(), StateError>;
 }

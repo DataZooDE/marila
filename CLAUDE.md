@@ -349,6 +349,38 @@ services aren't started yet. Add them when we start a tables-side feature.
   v0 implementation oversamples (e.g. `LIMIT topK * 100`) then
   post-filters to buy headroom; structural fix deferred.
 
+### C-9 — S3 Tables uses REST+JSON (not awsJson1.0); different envelope from s3vectors
+
+Probed 2026-05-17, eu-west-1. Despite what `doc/ARCHITECTURE.md` §8
+implies, S3 Tables doesn't speak `aws-json-1.0`. It's a **RESTful
+JSON** API with verb-and-path routing, like a stripped-down REST
+service:
+
+**CreateTableBucket**
+- `PUT /buckets` body `{"name":"<name>"}`
+- Success: HTTP 200, body `{"arn":"arn:aws:s3tables:<region>:<account>:bucket/<name>"}`
+- Duplicate: HTTP 409, body `{"message":"The bucket that you tried to create already exists, and you own it."}`
+
+**ListTableBuckets**
+- `GET /buckets` (no body)
+- Success: `{"tableBuckets":[{"arn","createdAt","name","ownerAccountId","tableBucketId","type"}, ...]}`
+- `createdAt`: ISO 8601 with **nanosecond precision + UTC `Z`** suffix,
+  e.g. `"2026-05-17T19:26:46.216057410Z"`. Distinct from s3vectors'
+  epoch-seconds (CLAUDE.md C-2a).
+- `tableBucketId`: server-minted UUID (we mint one with `uuid::Uuid::new_v4()`).
+- `type`: `"customer"` for buckets we created (vs. `"aws"` for service-owned).
+- `ownerAccountId`: AWS account id (we use `MARILA_AWS_ACCOUNT_ID`).
+
+**GetTableBucket**
+- `GET /buckets/{url-encoded-arn}`
+- Success: same shape as a list item.
+- Missing: HTTP 404, body `{"message":"The specified bucket does not exist."}`.
+
+**DeleteTableBucket**
+- `DELETE /buckets/{url-encoded-arn}`
+- Success: HTTP 204, empty body.
+- Missing: same 404 body as GetTableBucket.
+
 ### C-8 — Test-bucket cleanup must run on the test's own tokio runtime
 
 First attempt at cleanup used a sync `Drop` impl that spun up a brand-new

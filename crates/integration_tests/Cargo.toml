@@ -12,6 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 aws-config.workspace = true
 aws-sdk-s3vectors.workspace = true
+aws-sdk-s3tables.workspace = true
 aws-credential-types.workspace = true
 aws-smithy-types = "1"
 tokio.workspace = true

@@ -6,6 +6,7 @@ members = [
     "crates/core",
     "crates/integration_tests",
     "crates/storage",
+    "crates/tables",
     "crates/vectors",
 ]
 
@@ -21,6 +22,7 @@ publish = false
 marila-aws-compat = { path = "crates/aws_compat" }
 marila-core = { path = "crates/core" }
 marila-storage = { path = "crates/storage" }
+marila-tables = { path = "crates/tables" }
 marila-vectors = { path = "crates/vectors" }
 
 # HTTP / async
@@ -53,8 +55,9 @@ aws-config = { version = "1", features = ["behavior-version-latest", "credential
 aws-sdk-s3 = "1"
 aws-credential-types = "1"
 
-# Test-only — AWS S3 Vectors client used by the contract tests.
+# Test-only — AWS S3 Vectors / Tables clients used by the contract tests.
 aws-sdk-s3vectors = "1"
+aws-sdk-s3tables = "1"
 
 [profile.dev]
 debug = 1            # smaller binary, faster link; full backtraces still work

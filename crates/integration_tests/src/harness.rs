@@ -26,6 +26,10 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3vectors::Client;
 use uuid::Uuid;
 
+/// AWS S3 Tables client — separate from the S3 Vectors client because
+/// the two services have different SDK crates.
+pub type TablesClient = aws_sdk_s3tables::Client;
+
 /// Which back-end to point a test at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -46,25 +50,34 @@ pub const LOCAL_ENDPOINT: &str = "http://localhost:8080";
 
 /// Build an S3 Vectors client for the given target.
 pub async fn client(target: Target) -> Client {
+    let config = aws_sdk_config(target).await;
+    Client::new(&config)
+}
+
+/// Build an S3 Tables client for the given target.
+pub async fn tables_client(target: Target) -> TablesClient {
+    let config = aws_sdk_config(target).await;
+    TablesClient::new(&config)
+}
+
+async fn aws_sdk_config(target: Target) -> aws_config::SdkConfig {
     match target {
         Target::Local => {
             // Static dummy creds — marila parses but does not verify SigV4
             // (NG-1). The SDK still requires *some* credentials to sign.
             let creds = Credentials::new("marila", "marilasecret", None, None, "marila-local");
-            let config = aws_config::defaults(BehaviorVersion::latest())
+            aws_config::defaults(BehaviorVersion::latest())
                 .region(Region::new(REGION))
                 .credentials_provider(creds)
                 .endpoint_url(LOCAL_ENDPOINT)
                 .load()
-                .await;
-            Client::new(&config)
+                .await
         }
         Target::Aws => {
-            let config = aws_config::defaults(BehaviorVersion::latest())
+            aws_config::defaults(BehaviorVersion::latest())
                 .region(Region::new(REGION))
                 .load()
-                .await;
-            Client::new(&config)
+                .await
         }
     }
 }
@@ -245,6 +258,36 @@ pub fn unique_bucket_name(label: &str) -> String {
     // Keep total length within AWS's 3..=63 char window.
     let raw = format!("marila-it-{label}-{suffix}");
     raw[..raw.len().min(63)].to_string()
+}
+
+/// Like [`with_bucket`] for the s3tables surface — different SDK client,
+/// different cleanup call (`DeleteTableBucket` takes the ARN, not a name).
+pub async fn with_table_bucket<F, Fut>(client: TablesClient, prefix: &str, body: F)
+where
+    F: FnOnce(TablesClient, String) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let name = unique_bucket_name(prefix);
+    let outcome = AssertUnwindSafe(body(client.clone(), name.clone()))
+        .catch_unwind()
+        .await;
+
+    // Look up the ARN via List (cheapest sequencing) and delete by ARN.
+    // List is the only way without holding the ARN from the body.
+    let list = client.list_table_buckets().send().await;
+    if let Ok(list) = list
+        && let Some(b) = list.table_buckets().iter().find(|b| b.name() == name)
+    {
+        let _ = client
+            .delete_table_bucket()
+            .table_bucket_arn(b.arn())
+            .send()
+            .await;
+    }
+
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 /// Run `body` with a freshly-named bucket whose cleanup is guaranteed to
