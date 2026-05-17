@@ -49,7 +49,7 @@ uuid = { version = "1", features = ["v4"] }
 # (Arch package `duckdb` ships /usr/include/duckdb.h + /usr/lib/libduckdb.so).
 # See CLAUDE.md C-3.
 duckdb = "1.10502"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-config = { version = "1", features = ["behavior-version-latest", "credentials-login", "sso"] }
 aws-sdk-s3 = "1"
 aws-credential-types = "1"
 

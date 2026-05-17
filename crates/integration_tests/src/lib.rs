@@ -5,3 +5,5 @@
 //! bug, not a test bug.
 //!
 //! See `CLAUDE.md` "Methodology — AWS-contract-first TDD" for the why.
+
+pub mod harness;
