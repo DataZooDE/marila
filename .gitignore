@@ -1,0 +1,33 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Local state / data files
+/data/
+*.duckdb
+*.duckdb.wal
+
+# Docker volumes
+/.docker-volumes/
+
+# Python (optional uv venv for ad-hoc boto3 poking)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
