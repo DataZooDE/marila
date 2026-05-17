@@ -10,12 +10,16 @@
 //!   either target.
 
 use std::{
+    future::Future,
     net::TcpStream,
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::OnceLock,
     time::{Duration, Instant},
 };
+
+use futures::FutureExt;
 
 use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
@@ -234,7 +238,8 @@ fn wait_for_health(timeout: Duration) {
 // ---------------------------------------------------------------------------
 
 /// AWS-safe unique vector-bucket name with a stable test prefix so leaked
-/// buckets are easy to identify and bulk-delete.
+/// buckets are easy to identify and (manually) bulk-delete in the unlikely
+/// case [`with_bucket`] can't run its cleanup.
 pub fn unique_bucket_name(label: &str) -> String {
     let suffix = Uuid::new_v4().simple().to_string();
     // Keep total length within AWS's 3..=63 char window.
@@ -242,52 +247,34 @@ pub fn unique_bucket_name(label: &str) -> String {
     raw[..raw.len().min(63)].to_string()
 }
 
-/// Drop guard that calls `DeleteVectorBucket` on the named bucket when it
-/// goes out of scope — keeps both AWS and local state tidy even on panic.
-pub struct BucketGuard {
-    client: Client,
-    name: String,
-    armed: bool,
-}
+/// Run `body` with a freshly-named bucket whose cleanup is guaranteed to
+/// happen on the test's own tokio runtime — even when the body panics.
+///
+/// We previously used a sync `Drop` that spun up its own runtime; that
+/// races the `aws-sdk-s3vectors` client's HTTP-pool tasks (which are
+/// bound to the test runtime) and silently failed to delete on AWS,
+/// leaking real buckets in the user's account. Catching the panic and
+/// awaiting the delete on the same reactor that issued the create makes
+/// cleanup synchronous and reliable.
+pub async fn with_bucket<F, Fut>(client: Client, prefix: &str, body: F)
+where
+    F: FnOnce(Client, String) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let name = unique_bucket_name(prefix);
+    let outcome = AssertUnwindSafe(body(client.clone(), name.clone()))
+        .catch_unwind()
+        .await;
 
-impl BucketGuard {
-    pub fn new(client: Client, name: impl Into<String>) -> Self {
-        Self {
-            client,
-            name: name.into(),
-            armed: true,
-        }
-    }
+    // Always delete, even when the test body panicked. We swallow the
+    // delete error: cleanup is a side-channel, not the assertion.
+    let _ = client
+        .delete_vector_bucket()
+        .vector_bucket_name(&name)
+        .send()
+        .await;
 
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Disarm the guard — the test will manage the bucket lifecycle itself.
-    pub fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for BucketGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let client = self.client.clone();
-        let name = self.name.clone();
-        // We're in a sync Drop in a tokio test — block on a fresh runtime
-        // to avoid nesting onto the test's reactor.
-        let _ = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("delete-cleanup runtime");
-            rt.block_on(async {
-                let _ = client
-                    .delete_vector_bucket()
-                    .vector_bucket_name(&name)
-                    .send()
-                    .await;
-            });
-        })
-        .join();
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
     }
 }

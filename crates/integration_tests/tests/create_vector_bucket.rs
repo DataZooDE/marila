@@ -8,7 +8,7 @@
 
 use aws_sdk_s3vectors::Client;
 use marila_integration_tests::{
-    harness::{BucketGuard, MarilaProcess, Target, client, unique_bucket_name},
+    harness::{MarilaProcess, Target, client, with_bucket},
     require_aws,
 };
 
@@ -16,49 +16,43 @@ use marila_integration_tests::{
 async fn local_create_vector_bucket_round_trips() {
     let _marila = MarilaProcess::start();
     let c = client(Target::Local).await;
-    create_then_list_then_delete(c).await;
+    with_bucket(c, "create", create_then_list).await;
 }
 
 #[tokio::test]
 async fn aws_create_vector_bucket_round_trips() {
     require_aws!();
     let c = client(Target::Aws).await;
-    create_then_list_then_delete(c).await;
+    with_bucket(c, "create", create_then_list).await;
 }
 
 #[tokio::test]
 async fn local_create_vector_bucket_duplicate_returns_conflict() {
     let _marila = MarilaProcess::start();
     let c = client(Target::Local).await;
-    duplicate_name_returns_conflict(c).await;
+    with_bucket(c, "dup", duplicate_returns_conflict).await;
 }
 
 #[tokio::test]
 async fn aws_create_vector_bucket_duplicate_returns_conflict() {
     require_aws!();
     let c = client(Target::Aws).await;
-    duplicate_name_returns_conflict(c).await;
+    with_bucket(c, "dup", duplicate_returns_conflict).await;
 }
 
 // ---------------------------------------------------------------------------
-// Shared test bodies
+// Shared test bodies — these are the *contract*. They make no assertion
+// about which target they run against; if both targets pass them, marila
+// matches AWS on this op.
 // ---------------------------------------------------------------------------
 
-async fn create_then_list_then_delete(c: Client) {
-    let name = unique_bucket_name("create");
-    let _guard = BucketGuard::new(c.clone(), &name);
-
-    // 1. CreateVectorBucket returns success (no body fields the SDK
-    //    surfaces to assert on; the wire body contains `vectorBucketArn`
-    //    but the SDK model treats this output as empty).
+async fn create_then_list(c: Client, name: String) {
     c.create_vector_bucket()
         .vector_bucket_name(&name)
         .send()
         .await
         .expect("CreateVectorBucket should succeed");
 
-    // 2. ListVectorBuckets shows the new bucket with the expected ARN
-    //    and a creation timestamp.
     let list = c
         .list_vector_buckets()
         .send()
@@ -85,10 +79,7 @@ async fn create_then_list_then_delete(c: Client) {
     let _ = found.creation_time();
 }
 
-async fn duplicate_name_returns_conflict(c: Client) {
-    let name = unique_bucket_name("dup");
-    let _guard = BucketGuard::new(c.clone(), &name);
-
+async fn duplicate_returns_conflict(c: Client, name: String) {
     c.create_vector_bucket()
         .vector_bucket_name(&name)
         .send()

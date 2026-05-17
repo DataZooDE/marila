@@ -155,14 +155,43 @@ The vertical slice in progress is `CreateVectorBucket`; only RustFS is
 needed. Lakekeeper + Postgres images can be pre-pulled but their compose
 services aren't started yet. Add them when we start a tables-side feature.
 
+### C-8 — Test-bucket cleanup must run on the test's own tokio runtime
+
+First attempt at cleanup used a sync `Drop` impl that spun up a brand-new
+`tokio::runtime::Runtime` in a separate thread and `block_on`'d the
+`DeleteVectorBucket` call. **It silently failed against real AWS**, leaking
+6+ vector buckets in the account before we noticed via `aws s3vectors
+list-vector-buckets`.
+
+Likely cause: the `aws-sdk-s3vectors` `Client` owns HTTP connection-pool
+state and timers that are bound to the **test's** tokio runtime; calling
+it from a thread-local runtime gives the delete request no executor for
+its sub-tasks. The thread joins, the test exits, the delete never lands.
+
+The fix is `harness::with_bucket(client, prefix, body)` — wraps the test
+body in `futures::FutureExt::catch_unwind`, awaits the delete on the
+test's runtime even when the body panics, then re-raises. Cleanup is
+now synchronous with the test's reactor.
+
+**General rule.** If you need RAII-style cleanup around AWS SDK calls in
+an async test, *don't* use a sync `Drop` that spins its own runtime.
+Use an async scope helper instead.
+
 ---
 
 ## What's done
 
-| Slice | Status | Tests |
+| Slice | Status | Tests (local + AWS) |
 | --- | --- | --- |
-| Repo bootstrap (Cargo workspace, docker-compose, CLAUDE.md) | in progress | — |
-| `CreateVectorBucket` end-to-end | in progress | `tests/create_vector_bucket.rs` |
+| Repo bootstrap (Cargo workspace, docker-compose, CLAUDE.md, /health) | ✅ done | — |
+| `CreateVectorBucket` round-trip | ✅ done | `tests/create_vector_bucket.rs::*_create_vector_bucket_round_trips` |
+| `CreateVectorBucket` duplicate-name → `ConflictException` | ✅ done | `*_create_vector_bucket_duplicate_returns_conflict` |
+| `ListVectorBuckets` (basic happy path, used by the create test's verify) | ✅ done | covered transitively |
+| `DeleteVectorBucket` (used by cleanup) | ✅ done | covered transitively |
+
+Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
+`core`, `storage`, `vectors`, `integration_tests`. Tables side
+(`crates/tables`) is not present yet.
 
 ## What's next
 
@@ -176,9 +205,33 @@ recipe:
 4. Refactor, commit.
 
 Suggested order (low risk → higher):
-- `ListVectorBuckets`
-- `GetVectorBucket`
-- `DeleteVectorBucket`
-- `CreateIndex` (requires DuckDB VSS — bigger jump)
+- Promote `ListVectorBuckets` to its own contract test (currently only
+  exercised inside the Create test): pagination via `maxResults` / `nextToken`,
+  `prefix` filter, empty-state response shape.
+- `GetVectorBucket` (returns a single `vectorBucket` struct — needs a new
+  state-store query).
+- `DeleteVectorBucket` standalone contract test, including not-found shape.
+- `CreateIndex` (forces DuckDB VSS extension on engine open — big jump,
+  see `doc/DISCOVERIES.md` D-11 / D-6).
 - … then the tables side, starting from `CreateTableBucket` (forces
-  Lakekeeper + Postgres into the compose graph).
+  Lakekeeper + Postgres into the compose graph; uncomment the deferred
+  service blocks in `docker-compose.yml` and add the bootstrap one-shots
+  per `doc/DISCOVERIES.md` D-7).
+
+## Operational notes
+
+- Run the full suite end-to-end:
+  ```bash
+  docker compose up -d rustfs        # if not already
+  cargo test --workspace -- --test-threads=1
+  ```
+  Single-threaded because the local target re-uses one bound port (`:8080`)
+  via a `OnceLock`-cached marila child process — parallel tests would
+  collide on bucket-name state in the shared DuckDB.
+- Skip the AWS contract tests by unsetting `AWS_*` env / removing
+  `~/.aws/credentials`; the `aws_*` tests print `[skipped]` and the
+  suite stays green.
+- Test buckets in the AWS account are auto-deleted via
+  `harness::with_bucket`. If a panic *outside* `with_bucket` ever leaks
+  one, look for `marila-it-create-*` and `marila-it-dup-*` names in
+  `aws s3vectors list-vector-buckets` and delete by hand.
