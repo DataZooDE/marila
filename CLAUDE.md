@@ -403,6 +403,48 @@ now synchronous with the test's reactor.
 an async test, *don't* use a sync `Drop` that spins its own runtime.
 Use an async scope helper instead.
 
+### C-10 — Namespace + Table wire shapes (probed 2026-05-17)
+
+**CreateNamespace**
+- `PUT /namespaces/{table-bucket-arn}` body `{"namespace": ["name1", "name2"]}`.
+  Note `namespace` is an **array** — supports nested namespaces, matching
+  Iceberg's hierarchy.
+- Success: `{"namespace": [...], "tableBucketARN": "..."}`.
+
+**ListNamespaces**
+- `GET /namespaces/{table-bucket-arn}` →
+  `{"namespaces": [{createdAt, createdBy, namespace, namespaceId,
+  ownerAccountId, tableBucketId}]}`.
+
+**CreateTable**
+- `PUT /tables/{table-bucket-arn}/{namespace}` body
+  ```json
+  {
+    "name": "<table>",
+    "format": "ICEBERG",
+    "metadata": {"iceberg": {"schema": {"fields": [...]}}}
+  }
+  ```
+- Success: `{"tableARN": "arn:...:bucket/<b>/table/<uuid>", "versionToken": "..."}`.
+  AWS actually creates a real Iceberg table — the `tableARN` includes
+  a UUID (table-id) not the name, and `versionToken` is the CAS handle
+  for subsequent commits.
+
+**GetTable**
+- Returns a fat struct: `createdAt`, `createdBy`, `format`,
+  **`metadataLocation`** (S3 location of the Iceberg metadata.json),
+  `modifiedAt`, `name`, `namespace`, `namespaceId`, `ownerAccountId`,
+  `tableARN`, `tableBucketId`, `type`, `versionToken`,
+  **`warehouseLocation`** (S3 path of the managed AWS bucket).
+  AWS manages the underlying S3 storage for us — the bucket name has
+  a `--table-s3` suffix indicating a service-owned table bucket.
+
+**Implication for marila.** Faithful replication requires Lakekeeper:
+the Iceberg REST catalog can give us the metadata-location +
+version-token semantics. The `versionToken` doesn't map 1-1 to
+Iceberg's commit-token shape though — likely deviation to document
+in `doc/GAP_ANALYSIS.md`.
+
 ---
 
 ## What's done
