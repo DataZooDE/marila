@@ -62,11 +62,17 @@ pub fn parse_bucket_name_from_arn(arn: &str) -> Result<&str, AwsError> {
         )));
     }
     let resource = parts[5];
-    resource.strip_prefix("bucket/").ok_or_else(|| {
+    let name = resource.strip_prefix("bucket/").ok_or_else(|| {
         AwsError::Validation(format!(
             "vectorBucketArn resource must be `bucket/<name>`, got `{resource}`"
         ))
-    })
+    })?;
+    if name.is_empty() {
+        return Err(AwsError::Validation(format!(
+            "vectorBucketArn has an empty bucket name: {arn}"
+        )));
+    }
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -89,8 +95,15 @@ mod tests {
 
     #[test]
     fn parse_rejects_garbage() {
-        for bad in ["nope", "arn:aws:s3:::bucket/foo", "arn:aws:s3vectors:::bucket/"] {
-            assert!(parse_bucket_name_from_arn(bad).is_err(), "should reject {bad}");
+        for bad in [
+            "nope",
+            "arn:aws:s3:::bucket/foo",
+            "arn:aws:s3vectors:::bucket/",
+        ] {
+            assert!(
+                parse_bucket_name_from_arn(bad).is_err(),
+                "should reject {bad}"
+            );
         }
     }
 

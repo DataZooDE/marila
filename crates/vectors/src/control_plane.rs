@@ -12,9 +12,10 @@ use crate::{
     arn::{parse_bucket_name_from_arn, parse_index_from_arn, vector_bucket_arn, vector_index_arn},
     state::{
         CreateIndexInput, CreateIndexOutput, CreateVectorBucketInput, CreateVectorBucketOutput,
-        DeleteIndexInput, DeleteVectorBucketInput, GetVectorBucketInput, GetVectorBucketOutput,
-        ListVectorBucketsInput, ListVectorBucketsOutput, VectorBucketDescription,
-        VectorBucketSummary,
+        DeleteIndexInput, DeleteVectorBucketInput, GetIndexInput, GetIndexOutput,
+        GetVectorBucketInput, GetVectorBucketOutput, IndexDescription, IndexSummary,
+        ListIndexesInput, ListIndexesOutput, ListVectorBucketsInput, ListVectorBucketsOutput,
+        VectorBucketDescription, VectorBucketSummary,
     },
 };
 
@@ -186,9 +187,10 @@ pub async fn create_index(
 ) -> Result<Json<CreateIndexOutput>, AwsError> {
     let bucket = bucket_name_from_either(&input.vector_bucket_name, &input.vector_bucket_arn)?;
 
-    let index_name = input.index_name.as_deref().ok_or_else(|| {
-        AwsError::Validation("indexName is required".to_owned())
-    })?;
+    let index_name = input
+        .index_name
+        .as_deref()
+        .ok_or_else(|| AwsError::Validation("indexName is required".to_owned()))?;
     validate_index_name(index_name)?;
 
     let data_type = input.data_type.as_deref().unwrap_or("float32");
@@ -229,8 +231,65 @@ pub async fn create_index(
     .await
     .map_err(index_create_error)?;
 
-    Ok(Json(CreateIndexOutput {
-        index_arn: row.arn,
+    Ok(Json(CreateIndexOutput { index_arn: row.arn }))
+}
+
+// ---------------------------------------------------------------------------
+// ListIndexes
+// ---------------------------------------------------------------------------
+
+#[instrument(skip(app, input))]
+pub async fn list_indexes(
+    State(app): State<AppState>,
+    Json(input): Json<ListIndexesInput>,
+) -> Result<Json<ListIndexesOutput>, AwsError> {
+    let bucket = bucket_name_from_either(&input.vector_bucket_name, &input.vector_bucket_arn)?;
+    if let Some(p) = input.prefix.as_deref() {
+        validate_prefix(p)?;
+    }
+    let max = input
+        .max_results
+        .unwrap_or(DEFAULT_LIST_PAGE_SIZE)
+        .clamp(1, MAX_LIST_PAGE_SIZE) as usize;
+
+    let page = run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let prefix = input.prefix.clone();
+        let after = input.next_token.clone();
+        move |s| s.list_indexes_page(&bucket, prefix.as_deref(), after.as_deref(), max)
+    })
+    .await?;
+
+    Ok(Json(ListIndexesOutput {
+        indexes: page.rows.into_iter().map(IndexSummary::from_row).collect(),
+        next_token: page.next,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GetIndex
+// ---------------------------------------------------------------------------
+
+#[instrument(skip(app, input))]
+pub async fn get_index(
+    State(app): State<AppState>,
+    Json(input): Json<GetIndexInput>,
+) -> Result<Json<GetIndexOutput>, AwsError> {
+    let (bucket, index) = resolve_get_index_target(&input)?;
+
+    let row = run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index.clone();
+        move |s| s.get_index(&bucket, &index)
+    })
+    .await
+    .map_err(|e| match e {
+        AwsError::NotFound(_) => AwsError::NotFound(INDEX_NOT_FOUND_MESSAGE.to_owned()),
+        other => other,
+    })?;
+
+    Ok(Json(GetIndexOutput {
+        index: IndexDescription::from_row(row),
     }))
 }
 
@@ -308,9 +367,8 @@ fn validate_index_name(name: &str) -> Result<(), AwsError> {
     Ok(())
 }
 
-/// Resolve a DeleteIndex / future GetIndex target to `(bucket, index)`
-/// regardless of which (bucket name, bucket arn) + (index name, index arn)
-/// combination the client used.
+/// Resolve a DeleteIndex target to `(bucket, index)` regardless of
+/// which input combination the client used.
 fn resolve_index_target(input: &DeleteIndexInput) -> Result<(String, String), AwsError> {
     // Index ARN wins outright — it carries both pieces.
     if let Some(arn) = input.index_arn.as_deref() {
@@ -324,6 +382,35 @@ fn resolve_index_target(input: &DeleteIndexInput) -> Result<(String, String), Aw
         .ok_or_else(|| AwsError::Validation("indexName is required".to_owned()))?;
     validate_index_name(index)?;
     Ok((bucket, index.to_owned()))
+}
+
+/// Resolve a GetIndex target.
+///
+/// AWS accepts `(vectorBucketName, indexName)` together OR a standalone
+/// `indexArn`. Bucket ARN is **not** an option on GetIndex — that
+/// distinguishes it from DeleteIndex which accepts both.
+fn resolve_get_index_target(input: &GetIndexInput) -> Result<(String, String), AwsError> {
+    match (
+        input.index_arn.as_deref(),
+        input.vector_bucket_name.as_deref(),
+        input.index_name.as_deref(),
+    ) {
+        (Some(arn), None, None) => {
+            let (b, i) = parse_index_from_arn(arn)?;
+            Ok((b.to_owned(), i.to_owned()))
+        }
+        (None, Some(b), Some(i)) => {
+            validate_bucket_name(b)?;
+            validate_index_name(i)?;
+            Ok((b.to_owned(), i.to_owned()))
+        }
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => Err(AwsError::Validation(
+            "specify indexArn alone, not together with vectorBucketName/indexName".into(),
+        )),
+        _ => Err(AwsError::Validation(
+            "specify indexArn, or both vectorBucketName and indexName".into(),
+        )),
+    }
 }
 
 /// State-error → AWS-error mapping for `CreateIndex` only.
@@ -384,4 +471,3 @@ fn storage_error(e: StorageError) -> AwsError {
         },
     }
 }
-

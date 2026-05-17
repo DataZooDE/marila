@@ -80,6 +80,14 @@ pub struct VectorBucketPage {
     pub next: Option<String>,
 }
 
+/// A page of [`IndexRow`]s scoped to one bucket, with an opaque cursor
+/// pointing at the next index name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexPage {
+    pub rows: Vec<IndexRow>,
+    pub next: Option<String>,
+}
+
 /// CRUD over marila's local state.
 ///
 /// All methods are synchronous: DuckDB is sync, and forcing async at this
@@ -126,6 +134,26 @@ pub trait StateStore: Send + Sync {
     /// Number of indexes under a bucket. Used by `DeleteVectorBucket`
     /// to enforce AWS's "bucket must be empty" rule (CLAUDE.md C-2c).
     fn count_indexes(&self, bucket: &str) -> Result<u64, StateError>;
+
+    /// Cursor-paginated list of indexes within a bucket.
+    ///
+    /// Errors:
+    /// - [`StateError::NotFound`] when the bucket itself doesn't exist
+    ///   (mapped to AWS `NotFoundException` with the *bucket* body text).
+    fn list_indexes_page(
+        &self,
+        bucket: &str,
+        prefix: Option<&str>,
+        after: Option<&str>,
+        max: usize,
+    ) -> Result<IndexPage, StateError>;
+
+    /// Fetch one index by bucket + name.
+    ///
+    /// Returns [`StateError::NotFound`] for either a missing bucket or
+    /// a missing index. The handler maps both to the same
+    /// AWS-NotFoundException-with-index-body text (CLAUDE.md C-2d).
+    fn get_index(&self, bucket: &str, index: &str) -> Result<IndexRow, StateError>;
 
     /// Drop an index and its backing table. Idempotent w.r.t. the
     /// backing table — missing index returns `StateError::NotFound`.

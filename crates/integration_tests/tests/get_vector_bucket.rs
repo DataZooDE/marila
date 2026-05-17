@@ -77,7 +77,11 @@ async fn get_by_name(c: Client, name: String) {
     let bucket = resp.vector_bucket().expect("vectorBucket field present");
 
     assert_eq!(bucket.vector_bucket_name(), name);
-    assert!(bucket.vector_bucket_arn().ends_with(&format!(":bucket/{name}")));
+    assert!(
+        bucket
+            .vector_bucket_arn()
+            .ends_with(&format!(":bucket/{name}"))
+    );
     let _ = bucket.creation_time(); // any sane timestamp; SDK returns &DateTime
 
     let enc = bucket

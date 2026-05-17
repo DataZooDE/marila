@@ -5,7 +5,10 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use duckdb::{Connection, params};
 
 use crate::{
-    state::{DistanceMetric, IndexRow, StateError, StateStore, VectorBucketPage, VectorBucketRow},
+    state::{
+        DistanceMetric, IndexPage, IndexRow, StateError, StateStore, VectorBucketPage,
+        VectorBucketRow,
+    },
     vss,
 };
 
@@ -141,10 +144,7 @@ impl StateStore for DuckDbStateStore {
             .context("prepare list page")?;
 
         let mut rows: Vec<VectorBucketRow> = stmt
-            .query_map(
-                params![prefix, prefix, after, after, limit],
-                row_to_bucket,
-            )
+            .query_map(params![prefix, prefix, after, after, limit], row_to_bucket)
             .context("execute list page")?
             .collect::<Result<Vec<_>, _>>()
             .context("collect list page")?;
@@ -283,6 +283,81 @@ impl StateStore for DuckDbStateStore {
         })
     }
 
+    fn list_indexes_page(
+        &self,
+        bucket: &str,
+        prefix: Option<&str>,
+        after: Option<&str>,
+        max: usize,
+    ) -> Result<IndexPage, StateError> {
+        let limit = max.saturating_add(1) as i64;
+        let conn = self.conn.lock().expect("state mutex poisoned");
+
+        // Bucket existence check matches the AWS contract: listing
+        // indexes in a non-existent bucket is NotFoundException, not
+        // an empty page.
+        let bucket_present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM state.vector_buckets WHERE name = ?",
+                params![bucket],
+                |r| r.get(0),
+            )
+            .context("probe bucket presence")?;
+        if bucket_present == 0 {
+            return Err(StateError::NotFound(bucket.to_owned()));
+        }
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT bucket_name, name, arn, dimension, distance_metric, created_at
+                   FROM state.vector_indexes
+                  WHERE bucket_name = ?
+                    AND (? IS NULL OR name LIKE ? || '%')
+                    AND (? IS NULL OR name > ?)
+                  ORDER BY name
+                  LIMIT ?",
+            )
+            .context("prepare list_indexes page")?;
+
+        let mut rows: Vec<IndexRow> = stmt
+            .query_map(
+                params![bucket, prefix, prefix, after, after, limit],
+                row_to_index,
+            )
+            .context("execute list_indexes page")?
+            .collect::<Result<Vec<_>, _>>()
+            .context("collect list_indexes page")?;
+
+        let next = if rows.len() as i64 > max as i64 {
+            rows.truncate(max);
+            rows.last().map(|r| r.name.clone())
+        } else {
+            None
+        };
+
+        Ok(IndexPage { rows, next })
+    }
+
+    fn get_index(&self, bucket: &str, index: &str) -> Result<IndexRow, StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let result = conn.query_row(
+            "SELECT bucket_name, name, arn, dimension, distance_metric, created_at
+               FROM state.vector_indexes
+              WHERE bucket_name = ? AND name = ?",
+            params![bucket, index],
+            row_to_index,
+        );
+        match result {
+            Ok(row) => Ok(row),
+            Err(duckdb::Error::QueryReturnedNoRows) => {
+                Err(StateError::NotFound(format!("{bucket}/{index}")))
+            }
+            Err(e) => Err(StateError::Internal(
+                anyhow::Error::new(e).context("select vector_index"),
+            )),
+        }
+    }
+
     fn count_indexes(&self, bucket: &str) -> Result<u64, StateError> {
         let conn = self.conn.lock().expect("state mutex poisoned");
         let n: i64 = conn
@@ -322,6 +397,27 @@ fn row_to_bucket(row: &duckdb::Row<'_>) -> duckdb::Result<VectorBucketRow> {
     Ok(VectorBucketRow {
         name,
         arn,
+        created_at: DateTime::<Utc>::from_naive_utc_and_offset(created_naive, Utc),
+    })
+}
+
+fn row_to_index(row: &duckdb::Row<'_>) -> duckdb::Result<IndexRow> {
+    let bucket_name: String = row.get(0)?;
+    let name: String = row.get(1)?;
+    let arn: String = row.get(2)?;
+    let dimension: i32 = row.get(3)?;
+    let metric_wire: String = row.get(4)?;
+    let created_naive: NaiveDateTime = row.get(5)?;
+    // Data corruption — an unrecognised metric — falls back to cosine
+    // so we never panic inside a row mapper. Upstream tests will catch
+    // the divergence.
+    let distance_metric = DistanceMetric::from_wire(&metric_wire).unwrap_or(DistanceMetric::Cosine);
+    Ok(IndexRow {
+        bucket_name,
+        name,
+        arn,
+        dimension: dimension as u32,
+        distance_metric,
         created_at: DateTime::<Utc>::from_naive_utc_and_offset(created_naive, Utc),
     })
 }
@@ -473,6 +569,55 @@ mod tests {
         seed(&store, &["b"]);
         let err = store.delete_index("b", "ghost").unwrap_err();
         assert!(matches!(err, StateError::NotFound(s) if s == "b/ghost"));
+    }
+
+    #[test]
+    fn get_index_round_trip_and_missing() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        make_index(&store, "b", "i", 4);
+        let got = store.get_index("b", "i").unwrap();
+        assert_eq!(got.name, "i");
+        assert_eq!(got.dimension, 4);
+        assert_eq!(got.distance_metric, DistanceMetric::Cosine);
+
+        let err = store.get_index("b", "ghost").unwrap_err();
+        assert!(matches!(err, StateError::NotFound(s) if s == "b/ghost"));
+    }
+
+    #[test]
+    fn list_indexes_page_requires_bucket() {
+        let store = fresh();
+        let err = store
+            .list_indexes_page("nobucket", None, None, 10)
+            .unwrap_err();
+        assert!(matches!(err, StateError::NotFound(s) if s == "nobucket"));
+    }
+
+    #[test]
+    fn list_indexes_page_prefix_and_cursor() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        for n in ["alpha", "alphabeta", "gamma"] {
+            make_index(&store, "b", n, 4);
+        }
+
+        let prefixed = store
+            .list_indexes_page("b", Some("alpha"), None, 10)
+            .unwrap();
+        assert_eq!(prefixed.rows.len(), 2);
+        assert!(prefixed.rows.iter().all(|r| r.name.starts_with("alpha")));
+
+        let p1 = store.list_indexes_page("b", None, None, 2).unwrap();
+        assert_eq!(p1.rows.len(), 2);
+        assert_eq!(p1.next.as_deref(), Some("alphabeta"));
+
+        let p2 = store
+            .list_indexes_page("b", None, p1.next.as_deref(), 2)
+            .unwrap();
+        assert_eq!(p2.rows.len(), 1);
+        assert_eq!(p2.rows[0].name, "gamma");
+        assert!(p2.next.is_none());
     }
 
     #[test]

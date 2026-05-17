@@ -170,3 +170,96 @@ pub struct DeleteIndexInput {
     pub index_name: Option<String>,
     pub index_arn: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// ListIndexes
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ListIndexesInput {
+    pub vector_bucket_name: Option<String>,
+    pub vector_bucket_arn: Option<String>,
+    pub prefix: Option<String>,
+    pub max_results: Option<u32>,
+    pub next_token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListIndexesOutput {
+    pub indexes: Vec<IndexSummary>,
+    /// Absent (not null) when no further pages — matches the AWS wire
+    /// shape captured in CLAUDE.md C-2d.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_token: Option<String>,
+}
+
+/// Summary item returned by `ListIndexes` — note the SHAPE is intentionally
+/// narrower than `IndexDescription` (no dataType/dimension/distanceMetric).
+/// Those live on GetIndex only (CLAUDE.md C-2d).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexSummary {
+    pub vector_bucket_name: String,
+    pub index_name: String,
+    pub index_arn: String,
+    pub creation_time: i64,
+}
+
+impl IndexSummary {
+    pub fn from_row(row: marila_core::IndexRow) -> Self {
+        Self {
+            vector_bucket_name: row.bucket_name,
+            index_name: row.name,
+            index_arn: row.arn,
+            creation_time: row.created_at.timestamp(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GetIndex
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GetIndexInput {
+    pub vector_bucket_name: Option<String>,
+    pub index_name: Option<String>,
+    pub index_arn: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetIndexOutput {
+    pub index: IndexDescription,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexDescription {
+    pub vector_bucket_name: String,
+    pub index_name: String,
+    pub index_arn: String,
+    pub creation_time: i64,
+    pub data_type: String,
+    pub dimension: u32,
+    pub distance_metric: String,
+    pub encryption_configuration: EncryptionConfiguration,
+}
+
+impl IndexDescription {
+    pub fn from_row(row: marila_core::IndexRow) -> Self {
+        Self {
+            vector_bucket_name: row.bucket_name,
+            index_name: row.name,
+            index_arn: row.arn,
+            creation_time: row.created_at.timestamp(),
+            data_type: "float32".to_owned(),
+            dimension: row.dimension,
+            distance_metric: row.distance_metric.as_wire().to_owned(),
+            encryption_configuration: EncryptionConfiguration::default_sse_s3(),
+        }
+    }
+}

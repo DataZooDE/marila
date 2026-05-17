@@ -11,7 +11,9 @@
 use aws_sdk_s3vectors::Client;
 use aws_sdk_s3vectors::types::{DataType, DistanceMetric};
 use marila_integration_tests::{
-    harness::{BucketCtx, MarilaProcess, Target, client, unique_bucket_name, with_bucket_and_indexes},
+    harness::{
+        BucketCtx, MarilaProcess, Target, client, unique_bucket_name, with_bucket_and_indexes,
+    },
     require_aws,
 };
 

@@ -223,6 +223,33 @@ services aren't started yet. Add them when we start a tables-side feature.
   Once we track indexes in marila state, the `DeleteVectorBucket`
   handler must check for them and refuse with this exact message.
 
+### C-2d — ListIndexes / GetIndex wire shapes (probed 2026-05-17)
+
+**ListIndexes**
+- Request: `POST /ListIndexes` body
+  `{"vectorBucketName":"<b>", "prefix":"...", "maxResults":N, "nextToken":"..."}`
+  (or `vectorBucketArn`). Only `vectorBucketName` (or its arn) is required.
+- Success: `{"indexes":[...], "nextToken":"..."}`. `nextToken` is
+  **absent** on the last page. Each summary entry has only
+  `{vectorBucketName, indexName, indexArn, creationTime}` — **no**
+  dataType/dimension/distanceMetric (those are GetIndex-only).
+- Bucket missing: HTTP 404 `NotFoundException`,
+  body `{"message":"The specified vector bucket could not be found"}`.
+
+**GetIndex**
+- Request: `POST /GetIndex` body either
+  `{"vectorBucketName":"<b>", "indexName":"<i>"}` (both required together)
+  OR `{"indexArn":"arn:...:bucket/<b>/index/<i>"}`. Mixing them is a
+  ValidationException at AWS — we treat name+arn-of-bucket as invalid
+  too, mirroring the spirit of GetVectorBucket.
+- Success: `{"index": {vectorBucketName, indexName, indexArn,
+  creationTime, dataType, dimension, distanceMetric,
+  encryptionConfiguration: {sseType}}}`. The dimension is a JSON
+  number; encryptionConfiguration defaults to `{"sseType": "AES256"}`
+  per CLAUDE.md C-2b.
+- Missing index: HTTP 404 `NotFoundException`,
+  body `{"message":"The specified index could not be found"}`.
+
 ### C-8 — Test-bucket cleanup must run on the test's own tokio runtime
 
 First attempt at cleanup used a sync `Drop` impl that spun up a brand-new
@@ -265,7 +292,13 @@ Use an async scope helper instead.
 | `CreateIndex` round-trip (returns nested `:bucket/<b>/index/<i>` ARN) | ✅ done | `tests/create_index.rs::*_create_index_round_trips` |
 | `CreateIndex` duplicate → `ConflictException` ("An index with the specified name already exists") | ✅ done | `*_create_index_duplicate_returns_conflict` |
 | `CreateIndex` missing bucket → `NotFoundException` (bucket-not-found body text) | ✅ done | `*_create_index_missing_bucket_is_not_found` |
-| `DeleteIndex` (covered transitively by Round B cleanup) | ✅ done | covered |
+| `ListIndexes` w/ `prefix` + cursor pagination | ✅ done | `tests/list_get_delete_index.rs::*_list_indexes_prefix_and_pagination` |
+| `ListIndexes` missing bucket → `NotFoundException` (bucket body) | ✅ done | `*_list_indexes_missing_bucket_is_not_found` |
+| `GetIndex` by name (full `IndexDescription` shape: dataType, dimension, distanceMetric, AES256) | ✅ done | `*_get_index_by_name_returns_full_description` |
+| `GetIndex` by `indexArn` | ✅ done | `*_get_index_by_arn` |
+| `GetIndex` missing → `NotFoundException` (index body) | ✅ done | `*_get_index_missing_is_not_found` |
+| `DeleteIndex` happy path (then-gone via GetIndex 404) | ✅ done | `*_delete_index_then_get_is_not_found` |
+| `DeleteIndex` missing → `NotFoundException` (index body) | ✅ done | `*_delete_missing_index_is_not_found` |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
 `core`, `storage`, `vectors`, `integration_tests`. Tables side
