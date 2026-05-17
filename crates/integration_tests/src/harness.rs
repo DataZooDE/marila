@@ -207,8 +207,7 @@ fn spawn_marila() -> std::io::Result<MarilaProcess> {
 fn state_db_path() -> String {
     // Per-suite-invocation DB so tests don't see each other's state from
     // a prior run. Sits under target/ so `cargo clean` wipes it.
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/marila-test-state");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/marila-test-state");
     let _ = std::fs::create_dir_all(&dir);
     dir.join(format!("state-{}.duckdb", Uuid::new_v4()))
         .to_string_lossy()

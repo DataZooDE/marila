@@ -21,11 +21,11 @@ impl DuckDbStateStore {
     /// missing, and run the in-line schema migration. Idempotent.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StateError> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("create state dir {}", parent.display()))?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create state dir {}", parent.display()))?;
         }
         let conn =
             Connection::open(path).with_context(|| format!("open duckdb at {}", path.display()))?;

@@ -42,7 +42,9 @@ impl S3BucketStore {
         // Path-style addressing — RustFS / MinIO require it. Virtual-host
         // style would expect each bucket as a sub-domain, which doesn't
         // work for a local docker container.
-        let s3_cfg = S3ConfigBuilder::from(&shared).force_path_style(true).build();
+        let s3_cfg = S3ConfigBuilder::from(&shared)
+            .force_path_style(true)
+            .build();
         Ok(Self {
             client: Client::from_conf(s3_cfg),
         })
@@ -77,9 +79,7 @@ impl BucketStore for S3BucketStore {
     async fn delete_bucket(&self, name: &str) -> Result<(), StorageError> {
         match self.client.delete_bucket().bucket(name).send().await {
             Ok(_) => Ok(()),
-            Err(SdkError::ServiceError(svc))
-                if svc.raw().status().as_u16() == 404 =>
-            {
+            Err(SdkError::ServiceError(svc)) if svc.raw().status().as_u16() == 404 => {
                 debug!(%name, "bucket already absent — treating delete as no-op");
                 Ok(())
             }
