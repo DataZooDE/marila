@@ -27,6 +27,16 @@ async fn main() -> Result<()> {
         .context("connect to s3 backend")?,
     );
 
+    // Rehydrate every known (bucket, index) backing table from its
+    // RustFS snapshots — RustFS is the source of truth (FV-4). Boot
+    // continues if a single index fails; the warn-level logs make
+    // diagnostics easy.
+    match marila_vectors::rehydrate_from_snapshots(&*state, &*storage).await {
+        Ok(n) if n > 0 => info!(restored = n, "rehydrated vector snapshots into DuckDB"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "rehydrate pass failed"),
+    }
+
     let vectors_state = VectorsAppState {
         state: state.clone(),
         storage,
@@ -82,7 +92,10 @@ impl Config {
             s3_secret_access_key: env_or("MARILA_S3_SECRET_ACCESS_KEY", "marilasecret"),
             s3_region: env_or("MARILA_S3_REGION", "eu-west-1"),
             account_id: env_or("MARILA_AWS_ACCOUNT_ID", "000000000000"),
-            state_db: env_or("MARILA_STATE_DB", "data/state.duckdb"),
+            // Filename intentionally not `state.duckdb` — DuckDB names the
+            // catalog after the file stem, which would then collide with
+            // our `state` schema and make `state.vector_buckets` ambiguous.
+            state_db: env_or("MARILA_STATE_DB", "data/marila.duckdb"),
         })
     }
 }

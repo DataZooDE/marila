@@ -10,6 +10,7 @@ publish.workspace = true
 marila-aws-compat.workspace = true
 marila-core.workspace = true
 marila-storage.workspace = true
+anyhow.workspace = true
 
 axum.workspace = true
 tokio.workspace = true
@@ -19,3 +20,11 @@ tracing.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true }
+marila-core.workspace = true
+marila-storage.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tempfile = "3"

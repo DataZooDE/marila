@@ -9,4 +9,4 @@ mod s3_store;
 mod store;
 
 pub use s3_store::{S3BucketStore, S3Config};
-pub use store::{BucketStore, StorageError};
+pub use store::{BucketStore, ObjectListPage, StorageError};

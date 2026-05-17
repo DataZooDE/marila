@@ -7,7 +7,7 @@ use aws_sdk_s3::{
 };
 use tracing::debug;
 
-use crate::store::{BucketStore, StorageError};
+use crate::store::{BucketStore, ObjectListPage, StorageError};
 
 /// Static configuration for the [`S3BucketStore`].
 ///
@@ -116,6 +116,33 @@ impl BucketStore for S3BucketStore {
             .await
             .with_context(|| format!("delete object {bucket}/{key}"))?;
         Ok(())
+    }
+
+    async fn list_objects(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        after: Option<&str>,
+    ) -> Result<ObjectListPage, StorageError> {
+        let mut req = self.client.list_objects_v2().bucket(bucket).prefix(prefix);
+        if let Some(token) = after {
+            req = req.continuation_token(token);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("list_objects {bucket} prefix={prefix}"))?;
+        let keys = resp
+            .contents()
+            .iter()
+            .filter_map(|o| o.key().map(str::to_owned))
+            .collect();
+        let next = if resp.is_truncated().unwrap_or(false) {
+            resp.next_continuation_token().map(str::to_owned)
+        } else {
+            None
+        };
+        Ok(ObjectListPage { keys, next })
     }
 
     async fn get_object(&self, bucket: &str, key: &str) -> Result<Option<Vec<u8>>, StorageError> {

@@ -37,4 +37,25 @@ pub trait BucketStore: Send + Sync {
     /// caller can decide whether absence is an error (it isn't for the
     /// rebuild-from-snapshot path).
     async fn get_object(&self, bucket: &str, key: &str) -> Result<Option<Vec<u8>>, StorageError>;
+
+    /// List object keys under `<bucket>/<prefix>` with optional cursor
+    /// pagination. The caller composes pages until `next` is `None`.
+    ///
+    /// Used by the engine-open rebuild path to walk every snapshot
+    /// under `<bucket>/<index>/`. Marila's rebuild ignores `max_keys`
+    /// past 1000 — that's S3's per-page hard cap.
+    async fn list_objects(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        after: Option<&str>,
+    ) -> Result<ObjectListPage, StorageError>;
+}
+
+/// One page of object keys returned by [`BucketStore::list_objects`].
+pub struct ObjectListPage {
+    pub keys: Vec<String>,
+    /// The opaque continuation token to feed back as `after` on the
+    /// next page. `None` when the listing is complete.
+    pub next: Option<String>,
 }

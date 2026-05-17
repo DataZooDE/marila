@@ -349,6 +349,25 @@ services aren't started yet. Add them when we start a tables-side feature.
   v0 implementation oversamples (e.g. `LIMIT topK * 100`) then
   post-filters to buy headroom; structural fix deferred.
 
+### C-10 — Don't name the state file `state.duckdb` — catalog/schema collision
+
+DuckDB names the in-process catalog after the file stem of the
+`.duckdb` file (`state.duckdb` → catalog `state`). Marila's state
+schema is also named `state`, so a reference like
+`state.vector_buckets` becomes ambiguous: catalog `state` + table
+`vector_buckets`, or schema `state` + table `vector_buckets`? DuckDB
+errors with:
+
+```
+Binder Error: Ambiguous reference to catalog or schema "state" -
+use a fully qualified path like "state.state"
+```
+
+Default `MARILA_STATE_DB` is now `data/marila.duckdb`. The integration
+test harness already uses `state-<uuid>.duckdb` (UUID suffix avoids
+the collision on the file-stem side), so this only ever bit a fresh
+manual `cargo run -p marila` invocation.
+
 ### C-9 — S3 Tables uses REST+JSON (not awsJson1.0); different envelope from s3vectors
 
 Probed 2026-05-17, eu-west-1. Despite what `doc/ARCHITECTURE.md` §8
@@ -487,6 +506,7 @@ in `doc/GAP_ANALYSIS.md`.
 | `GetTableBucket` missing → `NotFoundException` (exact AWS body) | ✅ done | `*_get_missing_table_bucket_is_not_found` |
 | `DeleteTableBucket` missing → `NotFoundException` | ✅ done | `*_delete_missing_table_bucket_is_not_found` |
 | FV-4: `PutVectors` writes JSON snapshot to RustFS *before* DuckDB insert (and DeleteVectors removes it) | ✅ done | `tests/data_plane.rs::local_put_vectors_writes_snapshot_to_rustfs` |
+| FV-4: `rehydrate_from_snapshots` walks every known (bucket, index) and replays RustFS snapshots into DuckDB on engine open | ✅ done | `crates/vectors/tests/rehydrate.rs::rehydrate_restores_vectors_from_rustfs_snapshots` |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
 `core`, `storage`, `vectors`, `tables`, `integration_tests`.
@@ -509,10 +529,9 @@ Suggested order (low risk → higher):
 - `CreateTable` + `GetTable` — proxies to Lakekeeper's catalog REST,
   involves Iceberg REST pass-through under `/iceberg/v1/...` per
   ARCHITECTURE.md §6.2.
-- Rebuild-from-snapshot path on engine open: today PutVectors writes
-  the JSON snapshot durably (FV-4), but if `state.duckdb` is wiped, we
-  don't rehydrate from RustFS. Walking `<bucket>/<index>/*.json` and
-  re-issuing INSERTs would close this.
+- s3tables namespaces (`CreateNamespace` / `ListNamespaces` /
+  `GetNamespace` / `DeleteNamespace`) — first round that needs
+  Lakekeeper running (uncomment the deferred compose services per D-7).
 - VSS HNSW recall under restrictive filter — D-12 oversample
   mitigation (current marila inlines the WHERE clause and lets DuckDB
   decide; recall divergence vs. AWS is unproven and only matters at

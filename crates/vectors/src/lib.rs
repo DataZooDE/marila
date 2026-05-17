@@ -7,8 +7,10 @@
 mod arn;
 mod control_plane;
 mod filter;
+mod rehydrate;
 mod routes;
 mod state;
 
 pub use control_plane::AppState;
+pub use rehydrate::rehydrate_from_snapshots;
 pub use routes::router;
