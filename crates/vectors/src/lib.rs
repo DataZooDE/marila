@@ -6,6 +6,7 @@
 
 mod arn;
 mod control_plane;
+mod filter;
 mod routes;
 mod state;
 

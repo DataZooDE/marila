@@ -312,6 +312,43 @@ services aren't started yet. Add them when we start a tables-side feature.
   **index** message even when the marila state knows only the bucket
   is missing.
 
+### C-2f — QueryVectors wire shape (probed 2026-05-17)
+
+- Request: `POST /QueryVectors` body
+  ```json
+  {
+    "vectorBucketName":"<b>",            // or vectorBucketArn
+    "indexName":"<i>",                   // or indexArn
+    "topK": N,                            // required, min 1
+    "queryVector":{"float32":[...]},      // dim must match index
+    "filter":{...},                       // optional, Mongo-style
+    "returnDistance": bool,               // default false
+    "returnMetadata": bool                // default false
+  }
+  ```
+- Success: `{"distanceMetric":"cosine"|"euclidean","vectors":[
+      {"key":"...", "distance":<float>?, "metadata":{...}?, "data":{...}?}, ...
+  ]}`
+  Note the **distanceMetric echo** on the response — always present
+  (the index's configured metric). `distance` only included when
+  `returnDistance=true`. `metadata` / `data` follow the same
+  request flags.
+- Results are ordered by ascending distance (nearest first).
+- Filter language is Mongo-style:
+  - Implicit `$eq`: `{"field":"value"}` ≡ `{"field":{"$eq":"value"}}`
+  - Comparison: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`
+  - Set: `$in`, `$nin` (array values)
+  - Logical: `$and` (array of sub-filters), `$or`, `$not`
+- Missing index: HTTP 404, body `{"message":"The specified index could not be found"}`.
+- Dimension mismatch: HTTP 400 `ValidationException`,
+  body `{"fieldList":[{"path":"vector","message":"Invalid input: vector must have length 4, but has length 2"}],"message":"Query vector contains invalid values or is invalid for this index"}`
+- **Filter-while-search caveat** (`doc/DISCOVERIES.md` D-12): AWS
+  evaluates the filter during HNSW traversal so a restrictive filter
+  with `topK=10` still returns 10 matches. DuckDB-VSS post-filters by
+  default, collapsing recall under restrictive filters. Marila's
+  v0 implementation oversamples (e.g. `LIMIT topK * 100`) then
+  post-filters to buy headroom; structural fix deferred.
+
 ### C-8 — Test-bucket cleanup must run on the test's own tokio runtime
 
 First attempt at cleanup used a sync `Drop` impl that spun up a brand-new
@@ -367,6 +404,10 @@ Use an async scope helper instead.
 | `PutVectors` missing index → `NotFoundException` (collapsed bucket/index) | ✅ done | `*_put_vectors_on_missing_index_is_not_found` |
 | `PutVectors` dim mismatch → `ValidationException` | ✅ done | `*_put_vectors_dim_mismatch_is_validation` |
 | `GetVectors` returns metadata when `returnMetadata=true` | ✅ done | `*_get_vectors_returns_metadata_when_requested` |
+| `QueryVectors` unfiltered topK + `distanceMetric` echo + `returnDistance` | ✅ done | `tests/query_vectors.rs::*_query_vectors_unfiltered_returns_anchor_first` |
+| `QueryVectors` Mongo `filter` (implicit `$eq`, `$gt/$lt/$gte/$lte`, `$in/$nin`, `$and/$or/$not`) | ✅ done | `*_query_vectors_metadata_filter_excludes_non_matching` |
+| `QueryVectors` missing index → `NotFoundException` (collapsed index body) | ✅ done | `*_query_vectors_missing_index_is_not_found` |
+| `QueryVectors` dim mismatch → `ValidationException` | ✅ done | `*_query_vectors_dim_mismatch_is_validation` |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
 `core`, `storage`, `vectors`, `integration_tests`. Tables side
@@ -384,19 +425,17 @@ recipe:
 4. Refactor, commit.
 
 Suggested order (low risk → higher):
-- `QueryVectors` (the headline op — needs the Mongo-filter → SQL bridge
-  per `doc/ARCHITECTURE.md` §5.3 and the post-filter caveat in
-  `doc/DISCOVERIES.md` D-12). Will likely surface DuckDB VSS recall
-  divergence from AWS under filter — document deviations in a new
-  `doc/GAP_ANALYSIS.md` rather than over-engineering the fix.
 - Add a RustFS snapshot path for `PutVectors` per FV-4 (today marila
   stores vectors only in DuckDB; AWS contract is satisfied but the
-  durability promise — "RustFS is the source of truth" — isn't).
-  Track as `doc/GAP_ANALYSIS.md` entry until implemented.
-- … then the tables side, starting from `CreateTableBucket` (forces
-  Lakekeeper + Postgres into the compose graph; uncomment the deferred
-  service blocks in `docker-compose.yml` and add the bootstrap one-shots
-  per `doc/DISCOVERIES.md` D-7).
+  durability promise — "RustFS is the source of truth" — isn't yet).
+- Tables side, starting from `CreateTableBucket` (forces Lakekeeper +
+  Postgres into the compose graph; uncomment the deferred service
+  blocks in `docker-compose.yml` and add the bootstrap one-shots per
+  `doc/DISCOVERIES.md` D-7).
+- VSS HNSW recall under restrictive filter — D-12 oversample
+  mitigation (current marila inlines the WHERE clause and lets DuckDB
+  decide; recall divergence vs. AWS is unproven and only matters at
+  scale).
 
 ## Operational notes
 

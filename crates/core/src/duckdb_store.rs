@@ -6,7 +6,7 @@ use duckdb::{Connection, OptionalExt, params};
 
 use crate::{
     state::{
-        DistanceMetric, IndexPage, IndexRow, StateError, StateStore, VectorBucketPage,
+        DistanceMetric, IndexPage, IndexRow, QueryHit, StateError, StateStore, VectorBucketPage,
         VectorBucketRow, VectorPage, VectorRead, VectorWrite,
     },
     vss,
@@ -568,6 +568,75 @@ impl StateStore for DuckDbStateStore {
             .context("execute delete_vectors")?;
         Ok(())
     }
+
+    fn query_vectors(
+        &self,
+        bucket: &str,
+        index: &str,
+        query: &[f32],
+        top_k: usize,
+        _oversample: usize,
+        where_sql: Option<&str>,
+    ) -> Result<Vec<QueryHit>, StateError> {
+        let conn = self.conn.lock().expect("state mutex poisoned");
+        let (table, dim) = index_table_and_dim(&conn, bucket, index)?;
+
+        if query.len() != dim as usize {
+            return Err(StateError::DimensionMismatch {
+                got: query.len(),
+                expected: dim as usize,
+            });
+        }
+
+        let metric: String = conn
+            .query_row(
+                "SELECT distance_metric FROM state.vector_indexes WHERE bucket_name = ? AND name = ?",
+                params![bucket, index],
+                |r| r.get(0),
+            )
+            .context("fetch index distance_metric")?;
+        // DuckDB VSS exposes `array_cosine_distance` (cosine) and
+        // `array_distance` (Euclidean — already sqrt'd, matching
+        // REQUIREMENTS.md FV-5).
+        let dist_expr = match DistanceMetric::from_wire(&metric).unwrap_or(DistanceMetric::Cosine) {
+            DistanceMetric::Cosine => "array_cosine_distance(vec, $q)",
+            DistanceMetric::Euclidean => "array_distance(vec, $q)",
+        };
+
+        let q_lit = format_float_array_literal(query, dim)?;
+        let where_clause = where_sql.map(|w| format!("WHERE {w}")).unwrap_or_default();
+        let sql = format!(
+            "SELECT key, CAST(vec AS VARCHAR), CAST(meta AS VARCHAR), {dist_expr} AS distance
+               FROM {table}
+              {where_clause}
+              ORDER BY distance
+              LIMIT {top_k}"
+        )
+        .replace("$q", &q_lit);
+
+        let mut stmt = conn.prepare(&sql).context("prepare query_vectors")?;
+        let rows = stmt
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                let vec_str: Option<String> = row.get(1)?;
+                let meta_str: Option<String> = row.get(2)?;
+                let distance: f64 = row.get(3)?;
+                Ok((key, vec_str, meta_str, distance))
+            })
+            .context("execute query_vectors")?;
+
+        let mut hits = Vec::new();
+        for row in rows {
+            let (key, vec_str, meta_str, distance) = row.context("read query_vectors row")?;
+            hits.push(QueryHit {
+                key,
+                distance,
+                data: parse_vec(vec_str)?,
+                metadata: parse_meta(meta_str)?,
+            });
+        }
+        Ok(hits)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -945,6 +1014,73 @@ mod tests {
             .list_vectors_page("b", "i", None, 100, false, false)
             .unwrap();
         assert!(listed.rows.is_empty());
+    }
+
+    #[test]
+    fn query_vectors_unfiltered_returns_top_k_in_distance_order() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        make_index(&store, "b", "i", 4);
+        store
+            .put_vectors(
+                "b",
+                "i",
+                &[
+                    write("anchor", vec![1.0, 0.0, 0.0, 0.0], None),
+                    write("near", vec![0.9, 0.1, 0.0, 0.0], None),
+                    write("far", vec![0.0, 0.0, 0.0, 1.0], None),
+                ],
+            )
+            .unwrap();
+
+        let hits = store
+            .query_vectors("b", "i", &[1.0, 0.0, 0.0, 0.0], 2, 1, None)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].key, "anchor", "nearest should come first");
+        // Cosine distance to itself is ~0; clamp to small epsilon.
+        assert!(hits[0].distance < 0.001);
+        assert_eq!(hits[1].key, "near");
+    }
+
+    #[test]
+    fn query_vectors_with_filter_post_filters() {
+        let store = fresh();
+        seed(&store, &["b"]);
+        make_index(&store, "b", "i", 4);
+        store
+            .put_vectors(
+                "b",
+                "i",
+                &[
+                    write(
+                        "anchor",
+                        vec![1.0, 0.0, 0.0, 0.0],
+                        Some(serde_json::json!({"label":"a"})),
+                    ),
+                    write(
+                        "far",
+                        vec![0.0, 0.0, 0.0, 1.0],
+                        Some(serde_json::json!({"label":"b"})),
+                    ),
+                ],
+            )
+            .unwrap();
+
+        // Filter applied directly to DuckDB JSON. We use the same
+        // shape as `crates/vectors::filter::translate` would emit.
+        let hits = store
+            .query_vectors(
+                "b",
+                "i",
+                &[1.0, 0.0, 0.0, 0.0],
+                5,
+                1,
+                Some(r#"json_extract(meta, '$.label') = '"a"'::JSON"#),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, "anchor");
     }
 
     #[test]

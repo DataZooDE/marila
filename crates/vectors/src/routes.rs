@@ -9,7 +9,7 @@ use axum::{Router, routing::post};
 use crate::control_plane::{
     AppState, create_index, create_vector_bucket, delete_index, delete_vector_bucket,
     delete_vectors, get_index, get_vector_bucket, get_vectors, list_indexes, list_vector_buckets,
-    list_vectors, put_vectors,
+    list_vectors, put_vectors, query_vectors,
 };
 
 pub fn router(state: AppState) -> Router {
@@ -26,5 +26,6 @@ pub fn router(state: AppState) -> Router {
         .route("/GetVectors", post(get_vectors))
         .route("/ListVectors", post(list_vectors))
         .route("/DeleteVectors", post(delete_vectors))
+        .route("/QueryVectors", post(query_vectors))
         .with_state(state)
 }

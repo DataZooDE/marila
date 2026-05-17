@@ -123,6 +123,17 @@ pub struct VectorPage {
     pub next: Option<String>,
 }
 
+/// One nearest-neighbour query result.
+#[derive(Debug, Clone)]
+pub struct QueryHit {
+    pub key: String,
+    /// Always populated; the handler decides whether to surface it
+    /// based on the wire-level `returnDistance` flag.
+    pub distance: f64,
+    pub data: Option<Vec<f32>>,
+    pub metadata: Option<serde_json::Value>,
+}
+
 /// CRUD over marila's local state.
 ///
 /// All methods are synchronous: DuckDB is sync, and forcing async at this
@@ -242,4 +253,25 @@ pub trait StateStore: Send + Sync {
     /// Delete one or more vectors by key. Missing keys are not an
     /// error — AWS's contract is silently idempotent (CLAUDE.md C-2e).
     fn delete_vectors(&self, bucket: &str, index: &str, keys: &[String]) -> Result<(), StateError>;
+
+    /// Top-K nearest-neighbour query.
+    ///
+    /// `query` must have the same dimension as the index. `where_sql`
+    /// is an *already-translated* SQL fragment from
+    /// `crates/vectors::filter::translate` — the state store doesn't
+    /// parse Mongo filters. Pass `None` for an unfiltered query.
+    ///
+    /// `oversample` is the multiplier applied to `top_k` before
+    /// post-filtering — see CLAUDE.md C-2f. Pass 1 for no oversampling;
+    /// values above 1 mitigate the post-filter recall collapse described
+    /// in `doc/DISCOVERIES.md` D-12.
+    fn query_vectors(
+        &self,
+        bucket: &str,
+        index: &str,
+        query: &[f32],
+        top_k: usize,
+        oversample: usize,
+        where_sql: Option<&str>,
+    ) -> Result<Vec<QueryHit>, StateError>;
 }

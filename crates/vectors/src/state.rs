@@ -370,3 +370,41 @@ pub struct DeleteVectorsInput {
     pub index_arn: Option<String>,
     pub keys: Vec<String>,
 }
+
+// ---------------------------------------------------------------------------
+// QueryVectors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct QueryVectorsInput {
+    pub vector_bucket_name: Option<String>,
+    pub index_name: Option<String>,
+    pub index_arn: Option<String>,
+    pub top_k: Option<u32>,
+    pub query_vector: Option<VectorData>,
+    pub filter: Option<serde_json::Value>,
+    pub return_distance: Option<bool>,
+    pub return_metadata: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryVectorsOutput {
+    /// The index's configured distance metric (echoed back per the AWS
+    /// wire shape captured in CLAUDE.md C-2f).
+    pub distance_metric: String,
+    pub vectors: Vec<QueryVectorsHit>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryVectorsHit {
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<VectorData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}

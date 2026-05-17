@@ -10,14 +10,15 @@ use tracing::instrument;
 
 use crate::{
     arn::{parse_bucket_name_from_arn, parse_index_from_arn, vector_bucket_arn, vector_index_arn},
+    filter,
     state::{
         CreateIndexInput, CreateIndexOutput, CreateVectorBucketInput, CreateVectorBucketOutput,
         DeleteIndexInput, DeleteVectorBucketInput, DeleteVectorsInput, GetIndexInput,
         GetIndexOutput, GetVectorBucketInput, GetVectorBucketOutput, GetVectorsInput,
         GetVectorsOutput, IndexDescription, IndexSummary, ListIndexesInput, ListIndexesOutput,
         ListVectorBucketsInput, ListVectorBucketsOutput, ListVectorsInput, ListVectorsOutput,
-        PutVectorsInput, PutVectorsOutput, ReturnedVector, VectorBucketDescription,
-        VectorBucketSummary,
+        PutVectorsInput, PutVectorsOutput, QueryVectorsHit, QueryVectorsInput, QueryVectorsOutput,
+        ReturnedVector, VectorBucketDescription, VectorBucketSummary,
     },
 };
 
@@ -524,6 +525,92 @@ pub async fn delete_vectors(
     .map_err(data_plane_error)?;
 
     Ok(Json(serde_json::json!({})))
+}
+
+// ---------------------------------------------------------------------------
+// QueryVectors
+// ---------------------------------------------------------------------------
+
+/// Min / max for `topK`.
+const QUERY_TOP_K_MIN: u32 = 1;
+const QUERY_TOP_K_MAX: u32 = 100;
+
+#[instrument(skip(app, input))]
+pub async fn query_vectors(
+    State(app): State<AppState>,
+    Json(input): Json<QueryVectorsInput>,
+) -> Result<Json<QueryVectorsOutput>, AwsError> {
+    let (bucket, index) = resolve_data_plane_target(
+        &input.vector_bucket_name,
+        &input.index_name,
+        &input.index_arn,
+    )?;
+
+    let top_k = input
+        .top_k
+        .ok_or_else(|| AwsError::Validation("topK is required".to_owned()))?;
+    if !(QUERY_TOP_K_MIN..=QUERY_TOP_K_MAX).contains(&top_k) {
+        return Err(AwsError::Validation(format!(
+            "topK must be between {QUERY_TOP_K_MIN} and {QUERY_TOP_K_MAX} (got {top_k})"
+        )));
+    }
+    let top_k = top_k as usize;
+
+    let query_data = input
+        .query_vector
+        .and_then(|d| d.float32)
+        .ok_or_else(|| AwsError::Validation("queryVector.float32 is required".to_owned()))?;
+    if query_data.iter().any(|v| !v.is_finite()) {
+        return Err(AwsError::Validation(
+            "queryVector contains a non-finite value (NaN/Infinity not allowed)".to_owned(),
+        ));
+    }
+
+    let where_sql = match input.filter.as_ref() {
+        Some(f) => Some(filter::translate(f).map_err(|e| AwsError::Validation(e.to_string()))?),
+        None => None,
+    };
+
+    let return_distance = input.return_distance.unwrap_or(false);
+    let return_metadata = input.return_metadata.unwrap_or(false);
+
+    // Run the query + look up the index's metric for the response echo.
+    // Two state calls instead of one keeps the StateStore trait narrow;
+    // both go through the same spawn_blocking pool so the cost is one
+    // extra mutex acquisition.
+    let hits = run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index.clone();
+        let where_sql = where_sql.clone();
+        let q = query_data.clone();
+        move |s| s.query_vectors(&bucket, &index, &q, top_k, 1, where_sql.as_deref())
+    })
+    .await
+    .map_err(data_plane_error)?;
+
+    let metric_row = run_state(app.state.clone(), {
+        let bucket = bucket.clone();
+        let index = index.clone();
+        move |s| s.get_index(&bucket, &index)
+    })
+    .await
+    .map_err(data_plane_error)?;
+    let distance_metric = metric_row.distance_metric.as_wire().to_owned();
+
+    let vectors = hits
+        .into_iter()
+        .map(|h| QueryVectorsHit {
+            key: h.key,
+            distance: return_distance.then_some(h.distance),
+            data: None, // S3 Vectors' QueryVectors does NOT return raw data.
+            metadata: if return_metadata { h.metadata } else { None },
+        })
+        .collect();
+
+    Ok(Json(QueryVectorsOutput {
+        distance_metric,
+        vectors,
+    }))
 }
 
 // ---------------------------------------------------------------------------
