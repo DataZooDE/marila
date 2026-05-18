@@ -14,8 +14,13 @@
 
 mod arn;
 mod control_plane;
+mod iceberg_proxy;
+mod lakekeeper;
+mod namespace_handlers;
 mod routes;
 mod state;
+mod table_handlers;
 
 pub use control_plane::AppState;
+pub use lakekeeper::{DEFAULT_LAKEKEEPER_URL, LakekeeperClient, LakekeeperConfig};
 pub use routes::router;

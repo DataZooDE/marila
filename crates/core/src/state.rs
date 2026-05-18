@@ -302,6 +302,7 @@ pub trait StateStore: Send + Sync {
         &self,
         name: &str,
         arn: &str,
+        table_bucket_id: &str,
         owner_account_id: &str,
     ) -> Result<TableBucketRow, StateError>;
 

@@ -2320,11 +2320,13 @@ dependencies = [
  "marila-aws-compat",
  "marila-core",
  "marila-storage",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

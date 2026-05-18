@@ -680,11 +680,11 @@ impl StateStore for DuckDbStateStore {
         &self,
         name: &str,
         arn: &str,
+        table_bucket_id: &str,
         owner_account_id: &str,
     ) -> Result<TableBucketRow, StateError> {
         let conn = self.conn.lock().expect("state mutex poisoned");
         let now = Utc::now().naive_utc();
-        let table_bucket_id = uuid::Uuid::new_v4().to_string();
 
         let res = conn.execute(
             "INSERT INTO state.table_buckets
@@ -696,7 +696,7 @@ impl StateStore for DuckDbStateStore {
             Ok(_) => Ok(TableBucketRow {
                 name: name.to_owned(),
                 arn: arn.to_owned(),
-                table_bucket_id,
+                table_bucket_id: table_bucket_id.to_owned(),
                 owner_account_id: owner_account_id.to_owned(),
                 bucket_type: "customer".to_owned(),
                 created_at: DateTime::<Utc>::from_naive_utc_and_offset(now, Utc),

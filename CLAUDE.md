@@ -422,6 +422,34 @@ now synchronous with the test's reactor.
 an async test, *don't* use a sync `Drop` that spins its own runtime.
 Use an async scope helper instead.
 
+### C-11 — s3tables URL templates are NOT uniformly REST
+
+Despite looking REST-ish (`PUT /buckets`, `GET /buckets/{arn}`,
+`DELETE /tables/{arn}/{ns}/{name}`), AWS s3tables sprinkles in
+**RPC-style** URLs for some ops. Discovered the hard way when the SDK
+returned 404 against marila for GetTable. Captured from the aws-sdk-s3tables
+generated code (`src/operation/<op>.rs`):
+
+| Op | Method | URL template |
+| --- | --- | --- |
+| CreateNamespace | PUT | `/namespaces/{tableBucketARN}` |
+| ListNamespaces | GET | `/namespaces/{tableBucketARN}` |
+| GetNamespace | GET | `/namespaces/{tableBucketARN}/{namespace}` |
+| DeleteNamespace | DELETE | `/namespaces/{tableBucketARN}/{namespace}` |
+| CreateTableBucket | PUT | `/buckets` |
+| GetTableBucket | GET | `/buckets/{tableBucketARN}` |
+| ListTableBuckets | GET | `/buckets` |
+| DeleteTableBucket | DELETE | `/buckets/{tableBucketARN}` |
+| CreateTable | PUT | `/tables/{tableBucketARN}/{namespace}` |
+| ListTables | GET | `/tables/{tableBucketARN}` (with `?namespace=...`) |
+| **GetTable** | **GET** | **`/get-table?tableBucketARN=&namespace=&name=`** ← RPC! |
+| DeleteTable | DELETE | `/tables/{tableBucketARN}/{namespace}/{name}` |
+| GetTableMetadataLocation | GET | `/tables/{tableBucketARN}/{namespace}/{name}/metadata-location` |
+
+**General rule.** Before wiring routes for an s3tables op, grep its
+op module in `aws-sdk-s3tables` for `write!` to see the actual URL —
+don't assume REST symmetry. `grep -A 3 "write!" ...src/operation/<op>.rs`.
+
 ### C-10 — Namespace + Table wire shapes (probed 2026-05-17)
 
 **CreateNamespace**

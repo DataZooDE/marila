@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 use axum::{Router, routing::get};
 use marila_core::DuckDbStateStore;
 use marila_storage::{S3BucketStore, S3Config};
-use marila_tables::AppState as TablesAppState;
+use marila_tables::{
+    AppState as TablesAppState, DEFAULT_LAKEKEEPER_URL, LakekeeperClient, LakekeeperConfig,
+};
 use marila_vectors::AppState as VectorsAppState;
 use tokio::net::TcpListener;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
@@ -39,12 +41,22 @@ async fn main() -> Result<()> {
 
     let vectors_state = VectorsAppState {
         state: state.clone(),
-        storage,
+        storage: storage.clone(),
         region: cfg.s3_region.clone(),
         account_id: cfg.account_id.clone(),
     };
+
+    let lakekeeper = Arc::new(LakekeeperClient::new(LakekeeperConfig {
+        base_url: cfg.lakekeeper_url.clone(),
+        storage_endpoint: cfg.lakekeeper_storage_endpoint.clone(),
+        storage_access_key_id: cfg.s3_access_key_id.clone(),
+        storage_secret_access_key: cfg.s3_secret_access_key.clone(),
+        storage_region: cfg.s3_region.clone(),
+    }));
     let tables_state = TablesAppState {
         state: state.clone(),
+        storage: storage.clone(),
+        lakekeeper,
         region: cfg.s3_region.clone(),
         account_id: cfg.account_id.clone(),
     };
@@ -81,6 +93,12 @@ struct Config {
     s3_region: String,
     account_id: String,
     state_db: String,
+    /// Lakekeeper management + catalog base URL, e.g. `http://localhost:8181`.
+    lakekeeper_url: String,
+    /// S3 endpoint the warehouses should *write to* — usually the
+    /// docker-network alias `http://rustfs:9000` so Lakekeeper can
+    /// reach RustFS from inside the compose graph (see D-2).
+    lakekeeper_storage_endpoint: String,
 }
 
 impl Config {
@@ -96,6 +114,11 @@ impl Config {
             // catalog after the file stem, which would then collide with
             // our `state` schema and make `state.vector_buckets` ambiguous.
             state_db: env_or("MARILA_STATE_DB", "data/marila.duckdb"),
+            lakekeeper_url: env_or("MARILA_LAKEKEEPER_URL", DEFAULT_LAKEKEEPER_URL),
+            lakekeeper_storage_endpoint: env_or(
+                "MARILA_LAKEKEEPER_STORAGE_ENDPOINT",
+                "http://rustfs:9000",
+            ),
         })
     }
 }
