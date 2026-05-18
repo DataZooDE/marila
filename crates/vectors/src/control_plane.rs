@@ -323,7 +323,44 @@ pub async fn delete_index(
         other => other,
     })?;
 
+    // Walk the RustFS prefix `<bucket>/<index>/` and delete every
+    // snapshot. Without this DeleteVectorBucket later trips over a
+    // non-empty S3 bucket and fails. Errors during the walk are logged
+    // but not surfaced — the state row is the source of truth for
+    // "does this index exist", and the snapshots are durable-cache
+    // material per FV-4.
+    purge_index_snapshots(&app, &bucket, &index).await;
+
     Ok(Json(serde_json::json!({})))
+}
+
+/// Drop every `<bucket>/<index>/<key>.json` snapshot from the object
+/// store. Best-effort: a failure here doesn't roll back the state row,
+/// since by the time we get here marila no longer has any pointer to
+/// the orphaned objects. Future rehydration ignores prefixes that
+/// don't match a known (bucket, index) pair.
+async fn purge_index_snapshots(app: &AppState, bucket: &str, index: &str) {
+    let prefix = format!("{index}/");
+    let mut after: Option<String> = None;
+    loop {
+        match app.storage.list_objects(bucket, &prefix, after.as_deref()).await {
+            Ok(page) => {
+                for key in &page.keys {
+                    if let Err(e) = app.storage.delete_object(bucket, key).await {
+                        tracing::warn!(%bucket, %key, error = %format!("{e:#}"), "purge snapshot failed");
+                    }
+                }
+                if page.next.is_none() {
+                    return;
+                }
+                after = page.next;
+            }
+            Err(e) => {
+                tracing::warn!(%bucket, %prefix, error = %format!("{e:#}"), "list snapshots failed during purge");
+                return;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
