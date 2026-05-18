@@ -131,9 +131,10 @@ mod tests {
 
     #[tokio::test]
     async fn not_implemented_maps_to_501() {
-        let resp =
-            AwsError::NotImplemented("s3vectors:PutVectorBucketPolicy not supported by marila".into())
-                .into_response();
+        let resp = AwsError::NotImplemented(
+            "s3vectors:PutVectorBucketPolicy not supported by marila".into(),
+        )
+        .into_response();
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
         assert_eq!(
             resp.headers().get("x-amzn-errortype").unwrap(),

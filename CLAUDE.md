@@ -507,6 +507,8 @@ in `doc/GAP_ANALYSIS.md`.
 | `DeleteTableBucket` missing → `NotFoundException` | ✅ done | `*_delete_missing_table_bucket_is_not_found` |
 | FV-4: `PutVectors` writes JSON snapshot to RustFS *before* DuckDB insert (and DeleteVectors removes it) | ✅ done | `tests/data_plane.rs::local_put_vectors_writes_snapshot_to_rustfs` |
 | FV-4: `rehydrate_from_snapshots` walks every known (bucket, index) and replays RustFS snapshots into DuckDB on engine open | ✅ done | `crates/vectors/tests/rehydrate.rs::rehydrate_restores_vectors_from_rustfs_snapshots` |
+| FV-7: deliberately-not-implemented ops (`PutVectorBucketPolicy`, `GetVectorBucketPolicy`, `DeleteVectorBucketPolicy`, `ListTagsForResource`, `TagResource`, `UntagResource`) return `501 NotImplementedException` with the right envelope | ✅ done | `tests/unimplemented_ops.rs::local_unimplemented_ops_return_501_with_envelope` |
+| D-12 mitigation: `QueryVectors` with filter pulls `topK * 100` HNSW candidates, then applies the WHERE clause, then truncates to topK — buys recall against restrictive filters without leaving the single-SQL pass | ✅ done | covered by `tests/query_vectors.rs::*_query_vectors_metadata_filter_excludes_non_matching` |
 | FV-5: `QueryVectors` oversample-and-post-filter (100× when filter present) — D-12 recall mitigation | ✅ done | covered by `*_query_vectors_metadata_filter_excludes_non_matching` |
 | FV-7: 501 `NotImplementedException` for policy + tagging ops | ✅ done | `tests/unimplemented_ops.rs::local_unimplemented_ops_return_501_with_envelope` |
 
