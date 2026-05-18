@@ -45,6 +45,7 @@ anyhow = "1"
 # Time + ids
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Storage backends
 # `duckdb` without the `bundled` feature links to system libduckdb

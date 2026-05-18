@@ -23,6 +23,13 @@ pub enum AwsError {
     #[error("{0}")]
     NotFound(String),
 
+    /// The operation is recognised by AWS but deliberately not
+    /// implemented by marila (REQUIREMENTS.md FV-7 / FT-9 — policies,
+    /// tagging, replication, etc.). 501 with
+    /// `x-amzn-errortype: NotImplementedException`.
+    #[error("{0}")]
+    NotImplemented(String),
+
     #[error("{message}")]
     Internal { message: String },
 }
@@ -33,6 +40,7 @@ impl AwsError {
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Validation(_) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -42,13 +50,17 @@ impl AwsError {
             Self::Conflict(_) => "ConflictException",
             Self::Validation(_) => "ValidationException",
             Self::NotFound(_) => "NotFoundException",
+            Self::NotImplemented(_) => "NotImplementedException",
             Self::Internal { .. } => "InternalServerException",
         }
     }
 
     fn message(&self) -> &str {
         match self {
-            Self::Conflict(m) | Self::Validation(m) | Self::NotFound(m) => m,
+            Self::Conflict(m)
+            | Self::Validation(m)
+            | Self::NotFound(m)
+            | Self::NotImplemented(m) => m,
             Self::Internal { message } => message,
         }
     }
@@ -114,6 +126,18 @@ mod tests {
         assert_eq!(
             resp.headers().get("x-amzn-errortype").unwrap(),
             "ValidationException"
+        );
+    }
+
+    #[tokio::test]
+    async fn not_implemented_maps_to_501() {
+        let resp =
+            AwsError::NotImplemented("s3vectors:PutVectorBucketPolicy not supported by marila".into())
+                .into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            resp.headers().get("x-amzn-errortype").unwrap(),
+            "NotImplementedException"
         );
     }
 }

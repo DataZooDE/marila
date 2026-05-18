@@ -583,7 +583,7 @@ impl StateStore for DuckDbStateStore {
         index: &str,
         query: &[f32],
         top_k: usize,
-        _oversample: usize,
+        oversample: usize,
         where_sql: Option<&str>,
     ) -> Result<Vec<QueryHit>, StateError> {
         let conn = self.conn.lock().expect("state mutex poisoned");
@@ -612,15 +612,45 @@ impl StateStore for DuckDbStateStore {
         };
 
         let q_lit = format_float_array_literal(query, dim)?;
-        let where_clause = where_sql.map(|w| format!("WHERE {w}")).unwrap_or_default();
-        let sql = format!(
-            "SELECT key, CAST(vec AS VARCHAR), CAST(meta AS VARCHAR), {dist_expr} AS distance
-               FROM {table}
-              {where_clause}
-              ORDER BY distance
-              LIMIT {top_k}"
-        )
-        .replace("$q", &q_lit);
+
+        // Oversample-and-post-filter mitigation per doc/DISCOVERIES.md
+        // D-12 / CLAUDE.md C-2f. AWS evaluates the metadata filter
+        // *during* HNSW traversal, so a restrictive filter still
+        // returns topK matches when they exist. DuckDB-VSS, by
+        // contrast, post-filters: HNSW returns ~topK candidates and
+        // then the WHERE eliminates many of them, collapsing recall.
+        //
+        // The fix is to ask HNSW for `topK * oversample` candidates
+        // first, then apply the filter, then truncate to topK. This
+        // buys ~2 orders of magnitude of selectivity. The `oversample`
+        // factor is set by the handler (default 100 when a filter is
+        // present, 1 when no filter so we don't pay the cost for free).
+        let sql = if let Some(w) = where_sql {
+            let candidate_limit = top_k.saturating_mul(oversample.max(1));
+            format!(
+                "SELECT key, CAST(vec AS VARCHAR), CAST(meta AS VARCHAR), distance
+                   FROM (
+                       SELECT key, vec, meta, {dist_expr} AS distance
+                         FROM {table}
+                        ORDER BY distance
+                        LIMIT {candidate_limit}
+                   ) candidates
+                  WHERE {w}
+                  ORDER BY distance
+                  LIMIT {top_k}"
+            )
+            .replace("$q", &q_lit)
+        } else {
+            // Unfiltered fast path: let DuckDB push ORDER BY + LIMIT
+            // straight into the HNSW index without an extra subquery.
+            format!(
+                "SELECT key, CAST(vec AS VARCHAR), CAST(meta AS VARCHAR), {dist_expr} AS distance
+                   FROM {table}
+                  ORDER BY distance
+                  LIMIT {top_k}"
+            )
+            .replace("$q", &q_lit)
+        };
 
         let mut stmt = conn.prepare(&sql).context("prepare query_vectors")?;
         let rows = stmt

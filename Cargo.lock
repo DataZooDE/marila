@@ -2288,6 +2288,7 @@ dependencies = [
  "aws-smithy-types",
  "futures",
  "marila-storage",
+ "reqwest",
  "serde_json",
  "tokio",
  "tracing",

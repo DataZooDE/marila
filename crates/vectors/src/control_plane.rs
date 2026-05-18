@@ -633,12 +633,18 @@ pub async fn query_vectors(
     // Two state calls instead of one keeps the StateStore trait narrow;
     // both go through the same spawn_blocking pool so the cost is one
     // extra mutex acquisition.
+    //
+    // Oversample = 100 when a filter is present (D-12 mitigation —
+    // HNSW returns topK*100 candidates that are then filtered down to
+    // topK). Without a filter, oversample = 1 so we don't pay for
+    // extra HNSW work.
+    let oversample = if where_sql.is_some() { 100 } else { 1 };
     let hits = run_state(app.state.clone(), {
         let bucket = bucket.clone();
         let index = index.clone();
         let where_sql = where_sql.clone();
         let q = query_data.clone();
-        move |s| s.query_vectors(&bucket, &index, &q, top_k, 1, where_sql.as_deref())
+        move |s| s.query_vectors(&bucket, &index, &q, top_k, oversample, where_sql.as_deref())
     })
     .await
     .map_err(data_plane_error)?;

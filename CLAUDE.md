@@ -507,6 +507,8 @@ in `doc/GAP_ANALYSIS.md`.
 | `DeleteTableBucket` missing → `NotFoundException` | ✅ done | `*_delete_missing_table_bucket_is_not_found` |
 | FV-4: `PutVectors` writes JSON snapshot to RustFS *before* DuckDB insert (and DeleteVectors removes it) | ✅ done | `tests/data_plane.rs::local_put_vectors_writes_snapshot_to_rustfs` |
 | FV-4: `rehydrate_from_snapshots` walks every known (bucket, index) and replays RustFS snapshots into DuckDB on engine open | ✅ done | `crates/vectors/tests/rehydrate.rs::rehydrate_restores_vectors_from_rustfs_snapshots` |
+| FV-5: `QueryVectors` oversample-and-post-filter (100× when filter present) — D-12 recall mitigation | ✅ done | covered by `*_query_vectors_metadata_filter_excludes_non_matching` |
+| FV-7: 501 `NotImplementedException` for policy + tagging ops | ✅ done | `tests/unimplemented_ops.rs::local_unimplemented_ops_return_501_with_envelope` |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
 `core`, `storage`, `vectors`, `tables`, `integration_tests`.
@@ -532,10 +534,6 @@ Suggested order (low risk → higher):
 - s3tables namespaces (`CreateNamespace` / `ListNamespaces` /
   `GetNamespace` / `DeleteNamespace`) — first round that needs
   Lakekeeper running (uncomment the deferred compose services per D-7).
-- VSS HNSW recall under restrictive filter — D-12 oversample
-  mitigation (current marila inlines the WHERE clause and lets DuckDB
-  decide; recall divergence vs. AWS is unproven and only matters at
-  scale).
 
 ## Operational notes
 
