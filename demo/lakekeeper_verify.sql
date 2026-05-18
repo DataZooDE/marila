@@ -56,12 +56,12 @@ ATTACH 'marila-warehouse' AS lake (
     ACCESS_DELEGATION_MODE 'none'
 );
 
--- Namespace = Iceberg schema. We create a fresh one per run (the
--- previous run's tables still get cleaned up explicitly below) — DROP
--- SCHEMA CASCADE isn't supported on Iceberg schemas in duckdb-iceberg
--- today, so we drop the table individually and the schema after.
-DROP TABLE IF EXISTS lake.demo.orders;
+-- Namespace = Iceberg schema. Ensure it exists first — `DROP TABLE
+-- IF EXISTS lake.demo.orders` would otherwise error on a fresh run
+-- because referencing a non-existent schema bubbles up as a Catalog
+-- error, not a silently-skipped IF-EXISTS.
 CREATE SCHEMA IF NOT EXISTS lake.demo;
+DROP TABLE IF EXISTS lake.demo.orders;
 
 -- Tabular round-trip: CREATE → INSERT → SELECT → UPDATE → DELETE.
 -- The table is unpartitioned/unsorted so DuckDB-iceberg's UPDATE/DELETE
