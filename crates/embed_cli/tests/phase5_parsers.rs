@@ -16,11 +16,13 @@ use marila_embed::parse::{
 use marila_embed::source::RawDoc;
 
 fn raw(bytes: Vec<u8>, ext: &str) -> RawDoc {
+    let hash = blake3::hash(&bytes).to_hex().to_string();
     RawDoc {
         path: PathBuf::from(format!("fixture.{ext}")),
         source: format!("fixture.{ext}"),
         ext: ext.to_string(),
         bytes,
+        content_hash: hash,
     }
 }
 

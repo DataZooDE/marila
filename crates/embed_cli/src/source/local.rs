@@ -4,6 +4,7 @@
 //! into a `RawDoc` and feeds the pipeline.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use globset::{Glob, GlobSetBuilder};
@@ -11,6 +12,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use walkdir::WalkDir;
 
+use crate::checkpoint::Checkpoint;
 use crate::source::RawDoc;
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,16 @@ impl LocalSourceConfig {
 ///
 /// Returns when every input has been visited and `tx` has been dropped.
 pub async fn run(cfg: LocalSourceConfig, tx: mpsc::Sender<RawDoc>) -> Result<()> {
+    run_with_checkpoint(cfg, tx, None).await
+}
+
+/// Variant that consults a [`Checkpoint`] before reading bytes — paths
+/// already marked done are skipped without re-hashing or re-parsing.
+pub async fn run_with_checkpoint(
+    cfg: LocalSourceConfig,
+    tx: mpsc::Sender<RawDoc>,
+    checkpoint: Option<Arc<Checkpoint>>,
+) -> Result<()> {
     let resolved = resolve_paths(&cfg.inputs)?;
     debug!(file_count = resolved.len(), "local source resolved inputs");
 
@@ -85,11 +97,22 @@ pub async fn run(cfg: LocalSourceConfig, tx: mpsc::Sender<RawDoc>) -> Result<()>
             }
         };
 
+        let content_hash = blake3::hash(&bytes).to_hex().to_string();
+        let source = path.display().to_string();
+
+        if let Some(chk) = checkpoint.as_deref() {
+            if chk.is_done(&source, &content_hash) {
+                debug!(source = %source, "checkpoint says done; skipping");
+                continue;
+            }
+        }
+
         let raw = RawDoc {
-            source: path.display().to_string(),
+            source,
             path: path.clone(),
             bytes,
             ext,
+            content_hash,
         };
         if tx.send(raw).await.is_err() {
             // Downstream closed (cancellation). Stop walking.

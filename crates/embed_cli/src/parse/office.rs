@@ -35,6 +35,7 @@ impl Parser for DocxParser {
             kind: DocKind::Docx,
             text,
             sections: Vec::new(),
+            content_hash: raw.content_hash,
         })
     }
 }
@@ -64,6 +65,7 @@ impl Parser for PptxParser {
             kind: DocKind::Pptx,
             text,
             sections: Vec::new(),
+            content_hash: raw.content_hash,
         })
     }
 }
@@ -83,6 +85,7 @@ impl Parser for OdtParser {
             kind: DocKind::Odt,
             text,
             sections: Vec::new(),
+            content_hash: raw.content_hash,
         })
     }
 }
@@ -102,6 +105,7 @@ impl Parser for OdpParser {
             kind: DocKind::Pptx, // close-enough kind tag
             text,
             sections: Vec::new(),
+            content_hash: raw.content_hash,
         })
     }
 }

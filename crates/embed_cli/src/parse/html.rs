@@ -37,6 +37,7 @@ impl Parser for HtmlParser {
             kind: DocKind::Html,
             text,
             sections: Vec::new(),
+            content_hash: raw.content_hash,
         })
     }
 }
@@ -52,6 +53,7 @@ mod tests {
             source: "x".into(),
             ext: "html".into(),
             bytes: b"<html><body><h1>Hi</h1><p>there <b>world</b></p></body></html>".to_vec(),
+            content_hash: "test".into(),
         };
         let p = HtmlParser;
         let out = p.parse(raw).unwrap();

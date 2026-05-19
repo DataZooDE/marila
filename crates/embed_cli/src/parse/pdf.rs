@@ -51,6 +51,7 @@ impl Parser for PdfParser {
             kind: DocKind::Pdf,
             text,
             sections: Vec::new(),
+            content_hash: raw.content_hash,
         })
     }
 }

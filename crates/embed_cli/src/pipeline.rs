@@ -22,6 +22,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::checkpoint::Checkpoint;
 use crate::chunk::{Chunk, Chunker};
 use crate::embed::EmbeddingProvider;
 use crate::keys::chunk_key;
@@ -69,6 +70,8 @@ pub struct PipelineConfig {
     pub put_flush_ms: u64,
     pub max_chunks: u64,
     pub caps: ChannelCaps,
+    /// Resumable-run state. `None` disables checkpointing entirely.
+    pub checkpoint: Option<Arc<Checkpoint>>,
 }
 
 /// Counters returned to the caller for the summary line.
@@ -86,8 +89,11 @@ pub struct PipelineStats {
 /// Run a pipeline drained by a single local-filesystem source.
 pub async fn run_local(cfg: PipelineConfig, source_cfg: LocalSourceConfig) -> Result<PipelineStats> {
     let (raw_tx, raw_rx) = mpsc::channel::<RawDoc>(cfg.caps.source_to_parse);
+    let checkpoint = cfg.checkpoint.clone();
     let source_handle = tokio::spawn(async move {
-        if let Err(e) = crate::source::local::run(source_cfg, raw_tx).await {
+        if let Err(e) =
+            crate::source::local::run_with_checkpoint(source_cfg, raw_tx, checkpoint).await
+        {
             warn!(error = %e, "local source failed");
         }
     });
@@ -120,9 +126,13 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     let embed_failures = Arc::new(AtomicU64::new(0));
 
     // ----- channels -----
+    // The embed→put channel carries `(EmbeddedChunk, source)` so the
+    // put stage can attribute each put back to its source for the
+    // checkpoint's per-source completion tracking.
     let (parsed_tx, parsed_rx) = mpsc::channel::<ParsedDoc>(caps.parse_to_chunk);
     let (chunk_tx, chunk_rx) = mpsc::channel::<Chunk>(caps.chunk_to_embed);
-    let (embedded_tx, embedded_rx) = mpsc::channel::<EmbeddedChunk>(caps.embed_to_put);
+    let (embedded_tx, embedded_rx) =
+        mpsc::channel::<(EmbeddedChunk, String)>(caps.embed_to_put);
 
     // ----- parse pool -----
     let parsers = cfg.parsers.clone();
@@ -198,6 +208,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     // ----- chunk task -----
     let chunker = cfg.chunker;
     let key_strategy = cfg.key_strategy;
+    let chunker_checkpoint = cfg.checkpoint.clone();
     let chunk_task = {
         let chunks_emitted = chunks_emitted.clone();
         let max_chunks = cfg.max_chunks;
@@ -206,6 +217,9 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
             'outer: while let Some(doc) = parsed_rx.recv().await {
                 let pieces = chunker.chunk(&doc);
                 debug!(source = %doc.source, count = pieces.len(), "chunked");
+                let count = pieces.len() as u32;
+                let source = doc.source.clone();
+                let content_hash = doc.content_hash.clone();
                 for piece in pieces {
                     // Chunk task is single-threaded, so a relaxed load
                     // before incrementing is sufficient.
@@ -219,6 +233,9 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                     if chunk_tx.send(piece).await.is_err() {
                         break 'outer;
                     }
+                }
+                if let Some(chk) = &chunker_checkpoint {
+                    chk.seal(&source, count, &content_hash).await;
                 }
             }
             drop(chunk_tx);
@@ -283,9 +300,10 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                                     for (k, v) in &extra_metadata {
                                         metadata.insert(k.clone(), v.clone());
                                     }
+                                    let source = c.source.clone();
                                     let ec = EmbeddedChunk { key, vector, metadata };
                                     embedded.fetch_add(1, Ordering::Relaxed);
-                                    if embedded_tx.send(ec).await.is_err() {
+                                    if embedded_tx.send((ec, source)).await.is_err() {
                                         break 'worker;
                                     }
                                 }
@@ -309,29 +327,35 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     let put_batch = cfg.put_batch.max(1);
     let flush = std::time::Duration::from_millis(cfg.put_flush_ms.max(1));
     let sink = cfg.sink.clone();
+    let put_checkpoint = cfg.checkpoint.clone();
     let put_task = {
         let put_count = put_count.clone();
         tokio::spawn(async move {
+            // We need to know which sources each batched chunk came from so
+            // we can update the checkpoint on success. Pair them with
+            // their EmbeddedChunk in a sibling Vec.
             let mut buf: Vec<EmbeddedChunk> = Vec::with_capacity(put_batch);
+            let mut sources: Vec<String> = Vec::with_capacity(put_batch);
             let mut embedded_rx = embedded_rx;
             loop {
                 tokio::select! {
                     chunk = embedded_rx.recv() => {
                         match chunk {
-                            Some(c) => {
+                            Some((c, src)) => {
                                 buf.push(c);
+                                sources.push(src);
                                 if buf.len() >= put_batch {
-                                    flush_buf(&sink, &mut buf, &put_count).await;
+                                    flush_buf(&sink, &mut buf, &mut sources, &put_count, &put_checkpoint).await;
                                 }
                             }
                             None => {
-                                flush_buf(&sink, &mut buf, &put_count).await;
+                                flush_buf(&sink, &mut buf, &mut sources, &put_count, &put_checkpoint).await;
                                 break;
                             }
                         }
                     }
                     _ = tokio::time::sleep(flush), if !buf.is_empty() => {
-                        flush_buf(&sink, &mut buf, &put_count).await;
+                        flush_buf(&sink, &mut buf, &mut sources, &put_count, &put_checkpoint).await;
                     }
                 }
             }
@@ -358,17 +382,25 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
 async fn flush_buf(
     sink: &Arc<dyn Sink>,
     buf: &mut Vec<EmbeddedChunk>,
+    sources: &mut Vec<String>,
     counter: &Arc<std::sync::atomic::AtomicU64>,
+    checkpoint: &Option<Arc<Checkpoint>>,
 ) {
     if buf.is_empty() {
         return;
     }
     let to_put: Vec<EmbeddedChunk> = std::mem::take(buf);
+    let attribution: Vec<String> = std::mem::take(sources);
     let n = to_put.len() as u64;
     if let Err(e) = sink.put(&to_put).await {
         warn!(error = %e, count = n, "sink put failed");
     } else {
         counter.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        if let Some(chk) = checkpoint {
+            for src in &attribution {
+                chk.record_put(src).await;
+            }
+        }
     }
 }
 

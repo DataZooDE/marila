@@ -28,6 +28,7 @@ impl Parser for MarkdownParser {
             kind: DocKind::Markdown,
             text,
             sections,
+            content_hash: raw.content_hash,
         })
     }
 }

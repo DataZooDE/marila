@@ -12,6 +12,7 @@ use anyhow::Result;
 use serde_json::Value;
 use tracing::{debug, info};
 
+use crate::checkpoint::Checkpoint;
 use crate::chunk::{self, ChunkConfig};
 use crate::cli::{EmbeddingProviderName, PutArgs};
 use crate::embed::{EmbeddingProvider, stub::StubEmbedder};
@@ -178,6 +179,9 @@ async fn run_pipeline(
         exclude: args.exclude.clone(),
         max_file_bytes: args.max_file_bytes,
     };
+    let checkpoint = Some(Arc::new(
+        Checkpoint::load(args.common.checkpoint.clone(), args.resume).await?,
+    ));
     let cfg = PipelineConfig {
         provider,
         sink,
@@ -193,6 +197,7 @@ async fn run_pipeline(
         put_flush_ms: args.put_flush_ms,
         max_chunks: args.max_chunks,
         caps: ChannelCaps::default(),
+        checkpoint,
     };
     let stats = run_local(cfg, source_cfg).await?;
     info!(

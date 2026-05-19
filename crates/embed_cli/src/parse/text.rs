@@ -21,6 +21,7 @@ impl Parser for TextParser {
             kind: DocKind::Text,
             text,
             sections: Vec::new(),
+            content_hash: raw.content_hash,
         })
     }
 }

@@ -18,4 +18,7 @@ pub struct RawDoc {
     /// File extension (lowercased, no dot). Used by the parse-stage
     /// dispatch to pick a Parser impl.
     pub ext: String,
+    /// blake3-hex of `bytes`. Used by the checkpoint to short-circuit
+    /// already-done sources on `--resume`.
+    pub content_hash: String,
 }

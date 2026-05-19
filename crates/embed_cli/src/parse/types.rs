@@ -12,6 +12,9 @@ pub struct ParsedDoc {
     /// Optional structural hints — populated by parsers that retain
     /// section / heading info. Markdown is the canonical example.
     pub sections: Vec<Section>,
+    /// Content hash carried over from the source stage (blake3 of the
+    /// raw bytes). Used by the checkpoint to anchor `seal()` records.
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

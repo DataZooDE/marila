@@ -54,6 +54,7 @@ impl Parser for XlsxParser {
             kind: DocKind::Xlsx,
             text,
             sections: Vec::new(),
+            content_hash: raw.content_hash,
         })
     }
 }

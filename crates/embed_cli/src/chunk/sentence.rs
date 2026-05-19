@@ -98,6 +98,7 @@ mod tests {
             kind: DocKind::Text,
             text: text.to_string(),
             sections: Vec::new(),
+            content_hash: "test".into(),
         }
     }
 

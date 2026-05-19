@@ -73,6 +73,7 @@ impl Chunker for MarkdownChunker {
                     kind: DocKind::Markdown,
                     text: body.to_string(),
                     sections: Vec::new(),
+                    content_hash: doc.content_hash.clone(),
                 };
                 let inner = FixedChunker { cfg: self.cfg }.chunk(&synthetic);
                 for mut piece in inner {
@@ -134,6 +135,7 @@ mod tests {
             source: "x.md".into(),
             ext: "md".into(),
             bytes: md.as_bytes().to_vec(),
+            content_hash: "test".into(),
         })
         .unwrap()
     }

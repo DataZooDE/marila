@@ -15,6 +15,7 @@
 //! `/home/jr/.claude/plans/start-bootstrapping-this-new-elegant-bentley.md`.
 
 pub mod aws;
+pub mod checkpoint;
 pub mod chunk;
 pub mod cli;
 pub mod config;
