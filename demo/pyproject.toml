@@ -6,7 +6,8 @@ requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.41",       # ships the s3vectors + s3tables clients
     "botocore>=1.41",
-    "openai>=2.0",       # embedding model for the RAG demo
+    "openai>=2.0",       # embedding model for the OpenAI RAG demo
+    "ollama>=0.4",       # chat + embeddings for the agentic parlis demo
 ]
 
 # The demos are scripts, not an importable package. Tell setuptools so

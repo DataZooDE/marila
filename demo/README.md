@@ -29,6 +29,29 @@ the wire works:
   Useful for diagnosing the `/iceberg/v1/*` reverse-proxy without
   needing Python.
 
+### Bonus: agentic RAG over a local PDF corpus
+
+- **[`index_parlis.sh`](index_parlis.sh) + [`parlis_chat.py`](parlis_chat.py)** —
+  point `PARLIS_DIR` at any local directory of PDFs (no path is baked
+  in), index them via `marila-embed put` with **local Ollama**
+  (`embeddinggemma:latest` for embeddings, default 768-d, free + private),
+  then chat with an agentic loop on top:
+
+  ```bash
+  # one-time: index ~20k chunks under parlis/drucksachen
+  PARLIS_DIR=~/parlis/pdfs bash demo/index_parlis.sh
+
+  # then chat — the model decides when / how often to search
+  python demo/parlis_chat.py
+  ```
+
+  The chat model (default `gpt-oss:latest`) is given one tool,
+  `search_parlis(query, k)`, and an agentic prompt: refine its own
+  queries, search multiple times per turn, cite by source path. Inside
+  `parlis_chat.py` slash-commands `/sources` (last citations),
+  `/verbose` (show tool calls inline), `/reset`, `/model <name>`,
+  `/k <n>`, `/quit`. See the docstring for env-var knobs.
+
 [vectors-ga]: https://aws.amazon.com/blogs/aws/amazon-s3-vectors-now-generally-available-with-increased-scale-and-performance/
 [tables-athena]: https://aws.amazon.com/blogs/big-data/transform-your-data-to-amazon-s3-tables-with-amazon-athena/
 
