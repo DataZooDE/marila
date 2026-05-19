@@ -63,12 +63,20 @@ async fn build_provider(args: &PutArgs) -> Result<Arc<dyn EmbeddingProvider>> {
                 .unwrap_or(crate::embed::stub::DEFAULT_DIMENSION);
             Ok(Arc::new(StubEmbedder::new(dim)))
         }
-        EmbeddingProviderName::Openai => anyhow::bail!(
-            "openai provider is wired in phase 6 — pass --embedding-provider stub for now"
-        ),
-        EmbeddingProviderName::Ollama => anyhow::bail!(
-            "ollama provider is wired in phase 6 — pass --embedding-provider stub for now"
-        ),
+        EmbeddingProviderName::Openai => {
+            let provider =
+                crate::embed::openai::OpenAiEmbedder::from_env(args.common.embedding_model.clone())?;
+            Ok(Arc::new(provider))
+        }
+        EmbeddingProviderName::Ollama => {
+            let endpoint = std::env::var("OLLAMA_ENDPOINT").ok();
+            let provider = crate::embed::ollama::OllamaEmbedder::connect(
+                endpoint,
+                args.common.embedding_model.clone(),
+            )
+            .await?;
+            Ok(Arc::new(provider))
+        }
     }
 }
 
