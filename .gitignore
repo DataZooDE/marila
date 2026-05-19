@@ -5,8 +5,14 @@ Cargo.lock.bak
 
 # Local state / data files
 /data/
+**/data/embedded-rustfs/
 *.duckdb
 *.duckdb.wal
+
+# marila-embed checkpoints + structured logs
+.marila-embed-checkpoint.jsonl
+.marila-embed.jsonl
+.parlis-checkpoint.jsonl
 
 # Docker volumes
 /.docker-volumes/

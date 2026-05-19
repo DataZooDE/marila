@@ -34,7 +34,11 @@ set -euo pipefail
 : "${PARLIS_DIR:?set PARLIS_DIR to your local directory of PDFs}"
 [[ -d "$PARLIS_DIR" ]] || { echo "PARLIS_DIR=$PARLIS_DIR is not a directory" >&2; exit 1; }
 
-EMBED="${EMBED:-./target/debug/marila-embed}"
+# Resolve the workspace root from this script's location so the binary
+# path doesn't depend on the caller's cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+EMBED="${EMBED:-$REPO_ROOT/target/debug/marila-embed}"
 BUCKET="${BUCKET:-parlis}"
 INDEX="${INDEX:-drucksachen}"
 MAX_CHUNKS="${MAX_CHUNKS:-20000}"
@@ -46,7 +50,7 @@ EMBED_MODEL="${EMBED_MODEL:-embeddinggemma:latest}"
 CHECKPOINT="${CHECKPOINT:-./.parlis-checkpoint.jsonl}"
 
 # Make sure the binary exists.
-[[ -x "$EMBED" ]] || cargo build -p marila-embed
+[[ -x "$EMBED" ]] || (cd "$REPO_ROOT" && cargo build -p marila-embed)
 
 # marila ignores SigV4 but the SDK still demands creds; supply dummies.
 export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-marila}"
