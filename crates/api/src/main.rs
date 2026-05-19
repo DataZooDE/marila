@@ -10,7 +10,36 @@ async fn main() -> Result<()> {
     // When built without `embedded-rustfs`, install our own tracing
     // subscriber. With `embedded-rustfs`, RustFS's `init_obs` does it
     // (and would panic on a double `.init()` — same trap the test
-    // harness documents in CLAUDE.md C-12).
+    // harness documents in CLAUDE.md C-12). In that mode we instead
+    // *seed* `RUST_LOG` with sensible defaults so RustFS's own
+    // subscriber starts at info-level for marila + warn-level for
+    // RustFS's internal scan noise (`metacache_set` / `store_list_objects`
+    // log ERROR per missing-volume on a fresh boot — pure startup
+    // chatter, not actual failures). Set `RUST_LOG` yourself to dig
+    // deeper.
+    #[cfg(feature = "embedded-rustfs")]
+    if std::env::var_os("RUST_LOG").is_none() {
+        // The specific RustFS targets below ERROR-log on a fresh-boot
+        // bucket scan (no actual failure — the buckets just haven't
+        // been created yet). Mute them entirely with `=off`; a level
+        // filter at `warn` doesn't help because ERROR is *higher* than
+        // WARN in tracing's ordering. Set `RUST_LOG` yourself to see
+        // them.
+        // SAFETY: single-threaded program startup; nothing else is
+        // reading the environment yet.
+        unsafe {
+            std::env::set_var(
+                "RUST_LOG",
+                concat!(
+                    "info,",
+                    "rustfs_ecstore::cache_value=off,",
+                    "rustfs_ecstore::store_list_objects=off,",
+                    "rustfs_ecstore::disk::local=off,",
+                    "rustfs_ecstore::rpc::peer_s3_client=off",
+                ),
+            );
+        }
+    }
     #[cfg(not(feature = "embedded-rustfs"))]
     init_tracing();
 
