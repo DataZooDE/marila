@@ -44,7 +44,11 @@ async fn main() -> Result<()> {
                     "rustfs_ecstore::cache_value=off,",
                     "rustfs_ecstore::store_list_objects=off,",
                     "rustfs_ecstore::disk::local=off,",
-                    "rustfs_ecstore::rpc::peer_s3_client=off",
+                    "rustfs_ecstore::rpc::peer_s3_client=off,",
+                    // Drop server-level WARNs like `HeaderTimeout` on
+                    // idle keepalive / port-scan connections; real
+                    // server failures are ERROR and still surface.
+                    "rustfs::server::http=error",
                 ),
             );
         }
