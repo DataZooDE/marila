@@ -15,9 +15,14 @@
 //! `/home/jr/.claude/plans/start-bootstrapping-this-new-elegant-bentley.md`.
 
 pub mod aws;
+pub mod chunk;
 pub mod cli;
 pub mod config;
 pub mod embed;
 pub mod keys;
+pub mod parse;
+pub mod pipeline;
 pub mod put;
 pub mod sink;
+pub mod source;
+pub mod tokenize;

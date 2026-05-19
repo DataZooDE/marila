@@ -12,10 +12,14 @@ use anyhow::Result;
 use serde_json::Value;
 use tracing::{debug, info};
 
+use crate::chunk::{self, ChunkConfig};
 use crate::cli::{EmbeddingProviderName, PutArgs};
 use crate::embed::{EmbeddingProvider, stub::StubEmbedder};
 use crate::keys::chunk_key;
+use crate::parse;
+use crate::pipeline::{ChannelCaps, PipelineConfig, PipelineStats, run_local};
 use crate::sink::{EmbeddedChunk, Sink, in_memory::InMemorySink, s3vectors::S3VectorsSink};
+use crate::source::local::LocalSourceConfig;
 
 /// Stable per-vector metadata keys. Match AWS's `s3vectors-embed-cli`
 /// naming verbatim so consumers of `--filter` don't need to retrain.
@@ -30,16 +34,21 @@ pub const META_CONTENT_HASH: &str = "S3VECTORS-EMBED-CONTENT-HASH";
 const MAX_INLINE_CONTENT_BYTES: usize = 8 * 1024;
 
 /// `marila-embed put` entry point. Wires the configured provider to the
-/// s3vectors sink. Phase 1 only handled `--text-value`; later phases
-/// expand `collect_chunks` to walk + parse + chunk files.
+/// configured sink and either runs the streaming pipeline (`--text`,
+/// directories, globs) or the short-circuit single-chunk path
+/// (`--text-value`).
 pub async fn run(args: PutArgs) -> Result<PutOutcome> {
     let provider = build_provider(&args).await?;
     let sink = build_sink(&args, provider.as_ref()).await?;
     let dry_run = args.dry_run;
+
+    if !args.text.is_empty() {
+        let stats = run_pipeline(args, provider, sink).await?;
+        return Ok(PutOutcome { dry_run, stats: Some(stats) });
+    }
+
     run_with(args, provider, sink).await?;
-    Ok(PutOutcome {
-        dry_run,
-    })
+    Ok(PutOutcome { dry_run, stats: None })
 }
 
 async fn build_provider(args: &PutArgs) -> Result<Arc<dyn EmbeddingProvider>> {
@@ -138,6 +147,60 @@ pub async fn run_with(
 #[derive(Debug)]
 pub struct PutOutcome {
     pub dry_run: bool,
+    pub stats: Option<PipelineStats>,
+}
+
+async fn run_pipeline(
+    args: PutArgs,
+    provider: Arc<dyn EmbeddingProvider>,
+    sink: Arc<dyn Sink>,
+) -> Result<PipelineStats> {
+    let extra_metadata = parse_metadata(args.metadata.as_deref())?;
+    let chunker = chunk::build(
+        args.chunk_strategy,
+        ChunkConfig {
+            size: args.chunk_size,
+            overlap: args.chunk_overlap,
+        },
+    );
+    let parsers = parse::default_set();
+    let source_cfg = LocalSourceConfig {
+        inputs: args.text.clone(),
+        include: args.include.clone(),
+        exclude: args.exclude.clone(),
+        max_file_bytes: args.max_file_bytes,
+    };
+    let cfg = PipelineConfig {
+        provider,
+        sink,
+        chunker,
+        parsers,
+        key_strategy: args.key_strategy,
+        extra_metadata,
+        no_source_content: args.no_source_content,
+        parse_concurrency: args.parse_concurrency.unwrap_or_else(default_parse_concurrency),
+        embed_concurrency: args.embed_concurrency,
+        embed_batch: args.embed_batch,
+        put_batch: args.put_batch,
+        put_flush_ms: args.put_flush_ms,
+        max_chunks: args.max_chunks,
+        caps: ChannelCaps::default(),
+    };
+    let stats = run_local(cfg, source_cfg).await?;
+    info!(
+        raw_docs = stats.raw_docs,
+        chunks = stats.chunks,
+        embedded = stats.embedded,
+        put = stats.put,
+        parse_failures = stats.parse_failures,
+        embed_failures = stats.embed_failures,
+        "pipeline complete"
+    );
+    Ok(stats)
+}
+
+fn default_parse_concurrency() -> usize {
+    (num_cpus::get() / 2).max(1)
 }
 
 /// A pre-embed unit of work — the smallest thing the chunker emits and
