@@ -19,19 +19,28 @@ async fn main() -> Result<()> {
     // deeper.
     #[cfg(feature = "embedded-rustfs")]
     if std::env::var_os("RUST_LOG").is_none() {
-        // The specific RustFS targets below ERROR-log on a fresh-boot
-        // bucket scan (no actual failure — the buckets just haven't
-        // been created yet). Mute them entirely with `=off`; a level
-        // filter at `warn` doesn't help because ERROR is *higher* than
-        // WARN in tracing's ordering. Set `RUST_LOG` yourself to see
-        // them.
+        // Default everything to WARN — RustFS's per-request tracing
+        // emits a handful of INFO-level span-close events per S3 op,
+        // which at scale (e.g. rehydrating 200 snapshot objects on
+        // boot) drowns out marila's own lines. Then opt the marila
+        // crates back in at INFO so the user still sees the
+        // load-bearing lines (bind addr, embedded-rustfs endpoint,
+        // rehydrate count, shutdown signal). The four RustFS targets
+        // below additionally ERROR-log on the first-boot bucket scan;
+        // `=off` is the only level that actually mutes ERROR.
+        //
         // SAFETY: single-threaded program startup; nothing else is
         // reading the environment yet.
         unsafe {
             std::env::set_var(
                 "RUST_LOG",
                 concat!(
-                    "info,",
+                    "warn,",
+                    "marila=info,",
+                    "marila_vectors=info,",
+                    "marila_tables=info,",
+                    "marila_storage=info,",
+                    "marila_core=info,",
                     "rustfs_ecstore::cache_value=off,",
                     "rustfs_ecstore::store_list_objects=off,",
                     "rustfs_ecstore::disk::local=off,",
