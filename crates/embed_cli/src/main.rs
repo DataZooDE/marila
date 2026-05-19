@@ -10,7 +10,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Put(args) => {
             let outcome = put::run(args).await?;
-            tracing::info!(chunks = outcome.chunks, "put finished");
+            tracing::info!(dry_run = outcome.dry_run, "put finished");
             Ok(())
         }
         Command::Query(_) => {

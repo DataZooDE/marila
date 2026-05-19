@@ -45,6 +45,7 @@ blake3 = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-s3vectors = { workspace = true }
 aws-credential-types = { workspace = true }
+aws-smithy-types = "1"
 
 # Filesystem walking
 walkdir = { workspace = true }
@@ -65,3 +66,4 @@ tiktoken-rs = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+marila-integration-tests = { path = "../integration_tests" }

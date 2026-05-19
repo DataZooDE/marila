@@ -14,6 +14,7 @@
 //! Everything that follows is built incrementally per the plan in
 //! `/home/jr/.claude/plans/start-bootstrapping-this-new-elegant-bentley.md`.
 
+pub mod aws;
 pub mod cli;
 pub mod config;
 pub mod embed;

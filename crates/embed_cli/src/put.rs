@@ -12,10 +12,10 @@ use anyhow::Result;
 use serde_json::Value;
 use tracing::{debug, info};
 
-use crate::cli::PutArgs;
+use crate::cli::{EmbeddingProviderName, PutArgs};
 use crate::embed::{EmbeddingProvider, stub::StubEmbedder};
 use crate::keys::chunk_key;
-use crate::sink::{EmbeddedChunk, Sink, in_memory::InMemorySink};
+use crate::sink::{EmbeddedChunk, Sink, in_memory::InMemorySink, s3vectors::S3VectorsSink};
 
 /// Stable per-vector metadata keys. Match AWS's `s3vectors-embed-cli`
 /// naming verbatim so consumers of `--filter` don't need to retrain.
@@ -29,15 +29,57 @@ pub const META_CONTENT_HASH: &str = "S3VECTORS-EMBED-CONTENT-HASH";
 /// caller-provided fields too. (Real value tunable later via the spec.)
 const MAX_INLINE_CONTENT_BYTES: usize = 8 * 1024;
 
-/// `marila-embed put` entry point. Phase 1 only handles `--text-value`.
+/// `marila-embed put` entry point. Wires the configured provider to the
+/// s3vectors sink. Phase 1 only handled `--text-value`; later phases
+/// expand `collect_chunks` to walk + parse + chunk files.
 pub async fn run(args: PutArgs) -> Result<PutOutcome> {
-    let provider: Arc<dyn EmbeddingProvider> = Arc::new(StubEmbedder::default());
-    let sink = InMemorySink::new();
-    run_with(args, provider, Arc::new(sink.clone())).await?;
+    let provider = build_provider(&args).await?;
+    let sink = build_sink(&args, provider.as_ref()).await?;
+    let dry_run = args.dry_run;
+    run_with(args, provider, sink).await?;
     Ok(PutOutcome {
-        chunks: sink.len() as u64,
-        sink_snapshot: Some(sink),
+        dry_run,
     })
+}
+
+async fn build_provider(args: &PutArgs) -> Result<Arc<dyn EmbeddingProvider>> {
+    match args.common.embedding_provider {
+        EmbeddingProviderName::Stub => {
+            let dim = args
+                .common
+                .embedding_model
+                .as_deref()
+                .and_then(|m| m.strip_prefix("stub-"))
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or(crate::embed::stub::DEFAULT_DIMENSION);
+            Ok(Arc::new(StubEmbedder::new(dim)))
+        }
+        EmbeddingProviderName::Openai => anyhow::bail!(
+            "openai provider is wired in phase 6 — pass --embedding-provider stub for now"
+        ),
+        EmbeddingProviderName::Ollama => anyhow::bail!(
+            "ollama provider is wired in phase 6 — pass --embedding-provider stub for now"
+        ),
+    }
+}
+
+async fn build_sink(
+    args: &PutArgs,
+    provider: &dyn EmbeddingProvider,
+) -> Result<Arc<dyn Sink>> {
+    if args.dry_run {
+        return Ok(Arc::new(InMemorySink::new()));
+    }
+    let client = crate::aws::vectors_client(&args.common).await;
+    let mut sink = S3VectorsSink::new(
+        client,
+        args.common.vector_bucket_name.clone(),
+        args.common.index_name.clone(),
+    );
+    if args.auto_create_index {
+        sink = sink.with_auto_create(provider.dimension());
+    }
+    Ok(sink.into_arc())
 }
 
 /// Test-friendly variant: caller supplies the provider and sink, so the
@@ -95,10 +137,7 @@ pub async fn run_with(
 /// Result handed back to `main` so it can log a final summary.
 #[derive(Debug)]
 pub struct PutOutcome {
-    pub chunks: u64,
-    /// Only set when the default `run()` is used — gone whenever a caller
-    /// supplied a custom sink via `run_with`.
-    pub sink_snapshot: Option<InMemorySink>,
+    pub dry_run: bool,
 }
 
 /// A pre-embed unit of work — the smallest thing the chunker emits and
