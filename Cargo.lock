@@ -5974,6 +5974,7 @@ dependencies = [
  "marila-storage",
  "marila-tables",
  "marila-vectors",
+ "rustfs",
  "serde",
  "serde_json",
  "tokio",

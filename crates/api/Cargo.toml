@@ -14,6 +14,13 @@ path = "src/lib.rs"
 name = "marila"
 path = "src/main.rs"
 
+[features]
+default = []
+# Embed RustFS in-process so `cargo run -p marila --features embedded-rustfs`
+# is a single-binary deploy with no docker / no separate object store.
+# Same `rustfs::embedded::RustFSServer` we use in the integration tests.
+embedded-rustfs = ["dep:rustfs"]
+
 [dependencies]
 marila-aws-compat.workspace = true
 marila-core.workspace = true
@@ -29,3 +36,4 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+rustfs = { git = "https://github.com/rustfs/rustfs", tag = "1.0.0-beta.3", default-features = false, optional = true }

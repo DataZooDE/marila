@@ -151,3 +151,61 @@ async fn health() -> axum::Json<serde_json::Value> {
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
+
+// ---------------------------------------------------------------------------
+// Embedded RustFS (feature `embedded-rustfs`)
+// ---------------------------------------------------------------------------
+
+/// A running embedded RustFS server. Hold it in `main` for the lifetime
+/// of the process; its `Drop` impl best-effort cleans up. Returned as
+/// an opaque handle so callers don't need to depend on `rustfs` directly.
+#[cfg(feature = "embedded-rustfs")]
+pub struct EmbeddedRustFs {
+    pub endpoint: String,
+    _server: rustfs::embedded::RustFSServer,
+}
+
+/// Boot a RustFS server on `127.0.0.1:<ephemeral>`. Data volume defaults
+/// to `./data/embedded-rustfs/` so the demo corpus survives across runs;
+/// override via `MARILA_EMBEDDED_RUSTFS_VOLUME` (set to an empty string
+/// for an ephemeral temp dir).
+///
+/// Subject to the same one-server-per-process constraint as
+/// `rustfs::embedded` — calling this twice in the same process fails.
+#[cfg(feature = "embedded-rustfs")]
+pub async fn start_embedded_rustfs() -> Result<EmbeddedRustFs> {
+    let port = rustfs::embedded::find_available_port()
+        .context("pick a free port for embedded rustfs")?;
+    let mut builder = rustfs::embedded::RustFSServerBuilder::new()
+        .address(format!("127.0.0.1:{port}"))
+        .access_key("marila")
+        .secret_key("marilasecret")
+        .region("eu-west-1");
+
+    let volume = std::env::var("MARILA_EMBEDDED_RUSTFS_VOLUME")
+        .unwrap_or_else(|_| "data/embedded-rustfs".to_string());
+    if !volume.is_empty() {
+        std::fs::create_dir_all(&volume)
+            .with_context(|| format!("create embedded-rustfs volume {volume}"))?;
+        // Canonical path so the user's `~`/relative paths land in a
+        // single, stable directory across runs.
+        let canon = std::fs::canonicalize(&volume)
+            .with_context(|| format!("canonicalize {volume}"))?;
+        builder = builder.volume(canon.to_string_lossy().into_owned());
+        tracing::info!(volume = %canon.display(), "embedded rustfs using persistent volume");
+    } else {
+        tracing::warn!(
+            "MARILA_EMBEDDED_RUSTFS_VOLUME is empty — using a temp dir; \
+             data will be lost when marila exits"
+        );
+    }
+
+    let server = builder.build().await
+        .map_err(|e| anyhow::anyhow!("start embedded rustfs: {e}"))?;
+    let endpoint = server.endpoint();
+    tracing::info!(rustfs = %endpoint, "embedded rustfs ready");
+    Ok(EmbeddedRustFs {
+        endpoint,
+        _server: server,
+    })
+}

@@ -35,15 +35,24 @@ the wire works:
   point `PARLIS_DIR` at any local directory of PDFs (no path is baked
   in), index them via `marila-embed put` with **local Ollama**
   (`embeddinggemma:latest` for embeddings, default 768-d, free + private),
-  then chat with an agentic loop on top:
+  then chat with an agentic loop on top. With `--features
+  embedded-rustfs` (Option A above) the whole pipeline is zero-docker
+  + zero-cloud:
 
   ```bash
+  # one terminal: marila with in-process RustFS
+  cargo run -p marila --features embedded-rustfs &
+
   # one-time: index ~20k chunks under parlis/drucksachen
   PARLIS_DIR=~/parlis/pdfs bash demo/index_parlis.sh
 
   # then chat — the model decides when / how often to search
-  python demo/parlis_chat.py
+  demo/.venv/bin/python demo/parlis_chat.py
   ```
+
+  Marila's embedded RustFS volume lives at `./data/embedded-rustfs/`
+  by default so the index survives restarts (override via
+  `MARILA_EMBEDDED_RUSTFS_VOLUME`; empty string = ephemeral temp dir).
 
   The chat model (default `gpt-oss:latest`) is given one tool,
   `search_parlis(query, k)`, and an agentic prompt: refine its own
@@ -57,15 +66,27 @@ the wire works:
 
 ## Prerequisites
 
+Two ways to run marila — pick one:
+
 ```bash
+# Option A — all-in-one (recommended for the parlis demo):
+# Marila boots with RustFS in-process. No docker needed.
+cargo run -p marila --features embedded-rustfs &
+
+# Option B — sidecar (needed for the tables-side demo since Lakekeeper
+# is in docker and wants to share S3 with marila):
 docker compose --profile lakekeeper up -d
 cargo build -p marila && ./target/debug/marila &
+```
 
+Then the Python deps for whichever demo you're running:
+
+```bash
 cd demo
 uv venv .venv
 uv pip install -e .
 
-# For the RAG demo only:
+# For demo_vectors.sh (OpenAI RAG):
 export OPENAI_API_KEY=sk-...
 ```
 
