@@ -2,8 +2,11 @@
 
 pub mod html;
 pub mod markdown;
+pub mod office;
+pub mod pdf;
 pub mod text;
 pub mod types;
+pub mod xlsx;
 
 use std::sync::Arc;
 
@@ -36,6 +39,12 @@ pub fn default_set() -> Vec<Arc<dyn Parser>> {
         Arc::new(text::TextParser),
         Arc::new(markdown::MarkdownParser),
         Arc::new(html::HtmlParser),
+        Arc::new(pdf::PdfParser),
+        Arc::new(office::DocxParser),
+        Arc::new(office::PptxParser),
+        Arc::new(office::OdtParser),
+        Arc::new(office::OdpParser),
+        Arc::new(xlsx::XlsxParser),
     ]
 }
 
