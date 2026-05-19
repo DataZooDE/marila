@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use marila_embed::cli::{Cli, Command};
-use marila_embed::put;
+use marila_embed::{put, query};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,8 +25,8 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Query(_) => {
-            anyhow::bail!("`marila-embed query` lands in phase 7")
+        Command::Query(args) => {
+            query::run(args).await
         }
     }
 }

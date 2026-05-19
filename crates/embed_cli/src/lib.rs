@@ -23,6 +23,7 @@ pub mod keys;
 pub mod parse;
 pub mod pipeline;
 pub mod put;
+pub mod query;
 pub mod retry;
 pub mod sink;
 pub mod source;
