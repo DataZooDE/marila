@@ -182,6 +182,14 @@ async fn run_pipeline(
     let checkpoint = Some(Arc::new(
         Checkpoint::load(args.common.checkpoint.clone(), args.resume).await?,
     ));
+    let progress_counters = Arc::new(crate::progress::ProgressCounters::default());
+    let progress = crate::progress::ProgressHandle::start(
+        progress_counters.clone(),
+        &format!(
+            "{}/{}",
+            args.common.vector_bucket_name, args.common.index_name
+        ),
+    );
     let cfg = PipelineConfig {
         provider,
         sink,
@@ -198,8 +206,10 @@ async fn run_pipeline(
         max_chunks: args.max_chunks,
         caps: ChannelCaps::default(),
         checkpoint,
+        progress: Some(progress_counters),
     };
     let stats = run_local(cfg, source_cfg).await?;
+    progress.finish();
     info!(
         raw_docs = stats.raw_docs,
         chunks = stats.chunks,

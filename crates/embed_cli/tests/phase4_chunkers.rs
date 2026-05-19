@@ -40,6 +40,7 @@ async fn markdown_pipeline_attaches_section_path_metadata() {
         max_chunks: 0,
         caps: ChannelCaps::default(),
         checkpoint: None,
+        progress: None,
     };
     let source_cfg = LocalSourceConfig {
         inputs: vec![dir.path().join("a.md").to_string_lossy().into_owned()],
@@ -97,6 +98,7 @@ async fn sentence_chunker_packs_sentences() {
         max_chunks: 0,
         caps: ChannelCaps::default(),
         checkpoint: None,
+        progress: None,
     };
     let source_cfg = LocalSourceConfig {
         inputs: vec![dir.path().to_string_lossy().into_owned()],

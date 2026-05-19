@@ -49,6 +49,7 @@ async fn pipeline_ingests_text_directory_into_multiple_chunks() {
         max_chunks: 0,
         caps: ChannelCaps::default(),
         checkpoint: None,
+        progress: None,
     };
     let source_cfg = LocalSourceConfig {
         inputs: vec![dir.path().to_string_lossy().into_owned()],
@@ -105,6 +106,7 @@ async fn max_chunks_caps_emission() {
         max_chunks: 5,
         caps: ChannelCaps::default(),
         checkpoint: None,
+        progress: None,
     };
     let source_cfg = LocalSourceConfig {
         inputs: vec![dir.path().to_string_lossy().into_owned()],
@@ -141,6 +143,7 @@ async fn max_file_bytes_skips_large_files() {
         max_chunks: 0,
         caps: ChannelCaps::default(),
         checkpoint: None,
+        progress: None,
     };
     let source_cfg = LocalSourceConfig {
         inputs: vec![dir.path().to_string_lossy().into_owned()],

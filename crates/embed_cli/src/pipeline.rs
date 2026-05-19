@@ -27,6 +27,7 @@ use crate::chunk::{Chunk, Chunker};
 use crate::embed::EmbeddingProvider;
 use crate::keys::chunk_key;
 use crate::parse::{self, ParsedDoc, Parser};
+use crate::progress::ProgressCounters;
 use crate::put::{
     META_CHUNK_IDX, META_CONTENT_HASH, META_SRC_CONTENT, META_SRC_LOCATION,
 };
@@ -72,6 +73,10 @@ pub struct PipelineConfig {
     pub caps: ChannelCaps,
     /// Resumable-run state. `None` disables checkpointing entirely.
     pub checkpoint: Option<Arc<Checkpoint>>,
+    /// Optional externally-owned counters — when present, the pipeline
+    /// shares them with the progress reporter instead of allocating
+    /// its own.
+    pub progress: Option<Arc<ProgressCounters>>,
 }
 
 /// Counters returned to the caller for the summary line.
@@ -114,16 +119,14 @@ pub async fn run_with_source(
 async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<PipelineStats> {
     let caps = cfg.caps;
 
-    // Stats use atomics so each stage updates its own counter without
-    // contending on a single mutex.
-    use std::sync::atomic::{AtomicU64, Ordering};
-    let raw_docs = Arc::new(AtomicU64::new(0));
-    let parsed_docs = Arc::new(AtomicU64::new(0));
-    let chunks_emitted = Arc::new(AtomicU64::new(0));
-    let embedded = Arc::new(AtomicU64::new(0));
-    let put_count = Arc::new(AtomicU64::new(0));
-    let parse_failures = Arc::new(AtomicU64::new(0));
-    let embed_failures = Arc::new(AtomicU64::new(0));
+    // Reuse the externally-provided counters when the caller passed one
+    // — that's how the progress reporter sees live data — otherwise
+    // allocate a fresh set just for the final stats snapshot.
+    use std::sync::atomic::Ordering;
+    let counters = cfg
+        .progress
+        .clone()
+        .unwrap_or_else(|| Arc::new(ProgressCounters::default()));
 
     // ----- channels -----
     // The embed→put channel carries `(EmbeddedChunk, source)` so the
@@ -138,9 +141,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     let parsers = cfg.parsers.clone();
     let parse_workers = cfg.parse_concurrency.max(1);
     let parse_pool = {
-        let raw_docs = raw_docs.clone();
-        let parsed_docs = parsed_docs.clone();
-        let parse_failures = parse_failures.clone();
+        let counters = counters.clone();
         tokio::spawn(async move {
             // Fan out from a single raw_rx by wrapping it in a tokio::Mutex so
             // each worker pulls in turn. mpsc::Receiver is single-consumer so
@@ -151,9 +152,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                 let raw_rx = raw_rx.clone();
                 let parsed_tx = parsed_tx.clone();
                 let parsers = parsers.clone();
-                let raw_docs = raw_docs.clone();
-                let parsed_docs = parsed_docs.clone();
-                let parse_failures = parse_failures.clone();
+                let counters = counters.clone();
                 handles.push(tokio::spawn(async move {
                     loop {
                         let raw = {
@@ -161,7 +160,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                             g.recv().await
                         };
                         let Some(raw) = raw else { break };
-                        raw_docs.fetch_add(1, Ordering::Relaxed);
+                        counters.raw_docs.fetch_add(1, Ordering::Relaxed);
                         let Some(parser) = parse::dispatch(&parsers, &raw.ext) else {
                             warn!(
                                 source = %raw.source,
@@ -179,25 +178,23 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                         .await;
                         match parsed {
                             Ok(Ok(doc)) => {
-                                parsed_docs.fetch_add(1, Ordering::Relaxed);
+                                counters.parsed_docs.fetch_add(1, Ordering::Relaxed);
                                 if parsed_tx.send(doc).await.is_err() {
                                     break;
                                 }
                             }
                             Ok(Err(e)) => {
-                                parse_failures.fetch_add(1, Ordering::Relaxed);
+                                counters.parse_failures.fetch_add(1, Ordering::Relaxed);
                                 warn!(source = %raw.source, error = %e, "parse failed");
                             }
                             Err(e) => {
-                                parse_failures.fetch_add(1, Ordering::Relaxed);
+                                counters.parse_failures.fetch_add(1, Ordering::Relaxed);
                                 warn!(source = %raw.source, error = %e, "parse task panicked");
                             }
                         }
                     }
                 }));
             }
-            // Drop parsed_tx before await — but we already cloned per
-            // worker. The unused outer clone is dropped here.
             drop(parsed_tx);
             for h in handles {
                 let _ = h.await;
@@ -210,7 +207,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     let key_strategy = cfg.key_strategy;
     let chunker_checkpoint = cfg.checkpoint.clone();
     let chunk_task = {
-        let chunks_emitted = chunks_emitted.clone();
+        let counters = counters.clone();
         let max_chunks = cfg.max_chunks;
         tokio::spawn(async move {
             let mut parsed_rx = parsed_rx;
@@ -221,15 +218,13 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                 let source = doc.source.clone();
                 let content_hash = doc.content_hash.clone();
                 for piece in pieces {
-                    // Chunk task is single-threaded, so a relaxed load
-                    // before incrementing is sufficient.
                     if max_chunks > 0
-                        && chunks_emitted.load(Ordering::Relaxed) >= max_chunks
+                        && counters.chunks.load(Ordering::Relaxed) >= max_chunks
                     {
                         debug!("max_chunks cap hit; stopping chunk emission");
                         break 'outer;
                     }
-                    chunks_emitted.fetch_add(1, Ordering::Relaxed);
+                    counters.chunks.fetch_add(1, Ordering::Relaxed);
                     if chunk_tx.send(piece).await.is_err() {
                         break 'outer;
                     }
@@ -247,8 +242,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     let embed_workers = cfg.embed_concurrency.max(1);
     let embed_batch = cfg.embed_batch.max(1).min(provider.max_batch());
     let embed_pool = {
-        let embedded = embedded.clone();
-        let embed_failures = embed_failures.clone();
+        let counters = counters.clone();
         let extra_metadata = cfg.extra_metadata.clone();
         let no_source_content = cfg.no_source_content;
         tokio::spawn(async move {
@@ -258,12 +252,10 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                 let chunk_rx = chunk_rx.clone();
                 let embedded_tx = embedded_tx.clone();
                 let provider = provider.clone();
-                let embedded = embedded.clone();
-                let embed_failures = embed_failures.clone();
+                let counters = counters.clone();
                 let extra_metadata = extra_metadata.clone();
                 handles.push(tokio::spawn(async move {
                     'worker: loop {
-                        // Pull a batch.
                         let mut batch: Vec<Chunk> = Vec::with_capacity(embed_batch);
                         {
                             let mut g = chunk_rx.lock().await;
@@ -281,7 +273,9 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                         match provider.embed(&texts).await {
                             Ok(resp) => {
                                 if resp.vectors.len() != batch.len() {
-                                    embed_failures.fetch_add(batch.len() as u64, Ordering::Relaxed);
+                                    counters
+                                        .embed_failures
+                                        .fetch_add(batch.len() as u64, Ordering::Relaxed);
                                     warn!(
                                         wanted = batch.len(),
                                         got = resp.vectors.len(),
@@ -302,14 +296,16 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                                     }
                                     let source = c.source.clone();
                                     let ec = EmbeddedChunk { key, vector, metadata };
-                                    embedded.fetch_add(1, Ordering::Relaxed);
+                                    counters.embedded.fetch_add(1, Ordering::Relaxed);
                                     if embedded_tx.send((ec, source)).await.is_err() {
                                         break 'worker;
                                     }
                                 }
                             }
                             Err(e) => {
-                                embed_failures.fetch_add(batch.len() as u64, Ordering::Relaxed);
+                                counters
+                                    .embed_failures
+                                    .fetch_add(batch.len() as u64, Ordering::Relaxed);
                                 warn!(error = %e, batch_size = batch.len(), "embed failed");
                             }
                         }
@@ -329,7 +325,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     let sink = cfg.sink.clone();
     let put_checkpoint = cfg.checkpoint.clone();
     let put_task = {
-        let put_count = put_count.clone();
+        let counters = counters.clone();
         tokio::spawn(async move {
             // We need to know which sources each batched chunk came from so
             // we can update the checkpoint on success. Pair them with
@@ -345,17 +341,17 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                                 buf.push(c);
                                 sources.push(src);
                                 if buf.len() >= put_batch {
-                                    flush_buf(&sink, &mut buf, &mut sources, &put_count, &put_checkpoint).await;
+                                    flush_buf(&sink, &mut buf, &mut sources, &counters.put, &put_checkpoint).await;
                                 }
                             }
                             None => {
-                                flush_buf(&sink, &mut buf, &mut sources, &put_count, &put_checkpoint).await;
+                                flush_buf(&sink, &mut buf, &mut sources, &counters.put, &put_checkpoint).await;
                                 break;
                             }
                         }
                     }
                     _ = tokio::time::sleep(flush), if !buf.is_empty() => {
-                        flush_buf(&sink, &mut buf, &mut sources, &put_count, &put_checkpoint).await;
+                        flush_buf(&sink, &mut buf, &mut sources, &counters.put, &put_checkpoint).await;
                     }
                 }
             }
@@ -369,13 +365,13 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     let _ = put_task.await;
 
     Ok(PipelineStats {
-        raw_docs: raw_docs.load(Ordering::Relaxed),
-        parsed_docs: parsed_docs.load(Ordering::Relaxed),
-        chunks: chunks_emitted.load(Ordering::Relaxed),
-        embedded: embedded.load(Ordering::Relaxed),
-        put: put_count.load(Ordering::Relaxed),
-        parse_failures: parse_failures.load(Ordering::Relaxed),
-        embed_failures: embed_failures.load(Ordering::Relaxed),
+        raw_docs: counters.raw_docs.load(Ordering::Relaxed),
+        parsed_docs: counters.parsed_docs.load(Ordering::Relaxed),
+        chunks: counters.chunks.load(Ordering::Relaxed),
+        embedded: counters.embedded.load(Ordering::Relaxed),
+        put: counters.put.load(Ordering::Relaxed),
+        parse_failures: counters.parse_failures.load(Ordering::Relaxed),
+        embed_failures: counters.embed_failures.load(Ordering::Relaxed),
     })
 }
 
@@ -383,7 +379,7 @@ async fn flush_buf(
     sink: &Arc<dyn Sink>,
     buf: &mut Vec<EmbeddedChunk>,
     sources: &mut Vec<String>,
-    counter: &Arc<std::sync::atomic::AtomicU64>,
+    counter: &std::sync::atomic::AtomicU64,
     checkpoint: &Option<Arc<Checkpoint>>,
 ) {
     if buf.is_empty() {

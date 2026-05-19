@@ -23,6 +23,7 @@ pub mod embed;
 pub mod keys;
 pub mod parse;
 pub mod pipeline;
+pub mod progress;
 pub mod put;
 pub mod query;
 pub mod retry;

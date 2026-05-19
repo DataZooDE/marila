@@ -110,6 +110,7 @@ fn base_cfg(
         max_chunks,
         caps: ChannelCaps::default(),
         checkpoint,
+        progress: None,
     }
 }
 
