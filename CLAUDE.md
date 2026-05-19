@@ -422,6 +422,56 @@ now synchronous with the test's reactor.
 an async test, *don't* use a sync `Drop` that spins its own runtime.
 Use an async scope helper instead.
 
+### C-12 — Integration-test harness embeds RustFS, no docker required
+
+`crates/integration_tests/src/harness.rs` boots a `rustfs::embedded::
+RustFSServer` and mounts marila's axum router on an ephemeral
+`127.0.0.1:NNNN` port in the same process — there is no `MarilaProcess`
+child process anymore. Marila's router is exposed as a library function
+via `marila::build_router(ServerConfig)` (see `crates/api/src/lib.rs`).
+
+Three implementation details worth remembering:
+
+1. **Reactor on a dedicated thread.** `axum::serve` tasks live on
+   whichever tokio runtime spawned them. `#[tokio::test]` builds a
+   fresh runtime per test and tears it down on return. So we run the
+   embedded stack on its own background thread + its own multi-thread
+   runtime that `pending<()>()`'s forever — the listener stays alive
+   across every test in the binary.
+2. **Don't install a tracing subscriber in the harness.** RustFS's
+   `rustfs_obs::init_obs` calls `subscriber.init()` (not `try_init`),
+   so any prior global default panics it. `RUST_LOG` is still honoured
+   because RustFS reads it.
+3. **Docker autodetect for tables-side.** Lakekeeper runs in docker
+   and writes to S3 via the network alias `rustfs:9000`. It can't see
+   the embedded RustFS's ephemeral 127.0.0.1 port. So at harness
+   startup we TCP-probe `:9000`; if it's up, marila uses it (and
+   tables-side tests work), otherwise we fall back to the embedded
+   RustFS (and tables-side tests skip via
+   `require_lakekeeper_shared_storage!()`).
+
+`.cargo/config.toml` is needed because RustFS enables `tokio`'s
+`io-uring` feature, which is gated behind `--cfg tokio_unstable`. The
+workspace opts in via `[build] rustflags = ["--cfg", "tokio_unstable"]`.
+
+### C-13 — Don't depend on `calamine` while also using `rustfs`
+
+Calamine hard-enables `quick-xml`'s `encoding` feature. Cargo feature
+unification turns that on for every other quick-xml user in the tree.
+Once enabled, `quick_xml::events::attributes::Attribute::unescape_value`
+is `cfg`-gated out — and the version of `s3s` that RustFS 1.0.0-beta.3
+pins still calls it (s3s `main` has renamed it to `.unescape()` but
+the rev RustFS uses is stale). Result: the whole workspace fails to
+compile.
+
+We sidestep the conflict by hand-rolling the xlsx parser in
+`crates/embed_cli/src/parse/xlsx.rs` (zip + quick-xml without
+`encoding`). Marila-embed loses calamine's number/date formatting,
+but those don't matter for text embedding anyway.
+
+If you ever consider re-adding calamine, first verify that RustFS
+has rolled its s3s pin past `a3b1660` to a rev with the rename.
+
 ### C-11 — s3tables URL templates are NOT uniformly REST
 
 Despite looking REST-ish (`PUT /buckets`, `GET /buckets/{arn}`,
@@ -571,12 +621,17 @@ Suggested order (low risk → higher):
 
 - Run the full suite end-to-end:
   ```bash
-  docker compose up -d rustfs        # if not already
+  # Vectors-side only (no docker needed — harness embeds RustFS):
+  cargo test --workspace -- --test-threads=1 local_
+
+  # Everything including tables-side e2e (needs docker compose):
+  docker compose --profile lakekeeper up -d
   cargo test --workspace -- --test-threads=1
   ```
-  Single-threaded because the local target re-uses one bound port (`:8080`)
-  via a `OnceLock`-cached marila child process — parallel tests would
-  collide on bucket-name state in the shared DuckDB.
+  Single-threaded because each test binary shares one in-process marila
+  router + DuckDB state via an `OnceLock`-cached `EmbeddedStack`; parallel
+  tests would collide on bucket-name state. See C-12 for the harness
+  architecture.
 - Skip the AWS contract tests by unsetting `AWS_*` env / removing
   `~/.aws/credentials`; the `aws_*` tests print `[skipped]` and the
   suite stays green.

@@ -58,7 +58,6 @@ scraper = { workspace = true }
 lopdf = { workspace = true }
 zip = { workspace = true }
 quick-xml = { workspace = true }
-calamine = { workspace = true }
 unicode-segmentation = { workspace = true }
 
 # Tokenization

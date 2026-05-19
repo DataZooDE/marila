@@ -1,22 +1,34 @@
-//! Test harness shared by all contract tests.
+//! Test harness — embedded RustFS + in-process marila router.
 //!
-//! Responsibilities:
-//! - Build an `aws-sdk-s3vectors` `Client` for either local marila or
-//!   real AWS, with the same SDK code path (no test-specific HTTP
-//!   plumbing).
-//! - Spawn and clean up a marila child process for `Target::Local`.
-//! - Skip `Target::Aws` tests cleanly when no AWS creds are configured.
-//! - Provide an RAII bucket-name guard so tests can't leak state on
-//!   either target.
+//! Per test binary we boot ONE `EmbeddedStack` (lazily, via
+//! `tokio::sync::OnceCell`) consisting of:
+//!
+//!   * a RustFS server bound to an ephemeral port on 127.0.0.1
+//!   * a marila axum router served on a *different* ephemeral port,
+//!     pointing at the RustFS endpoint for its S3 backend
+//!
+//! Tests get an `aws-sdk-s3vectors` (or s3tables) `Client` configured
+//! against marila's ephemeral URL. Same wire shape as production —
+//! marila signs SigV4 against a real localhost socket — no in-memory
+//! tower mock, no protocol shortcut.
+//!
+//! Why this replaces the old child-process model:
+//!
+//!   * no docker dependency for `cargo test` (we ship RustFS via the
+//!     `rustfs::embedded` module — see its docs for the
+//!     one-server-per-process constraint, which our OnceCell respects)
+//!   * panics surface in the test binary's own stderr instead of being
+//!     buried in a child's stdio
+//!   * debuggers + RUST_LOG work uniformly across marila handlers and
+//!     test bodies
+//!   * tests assert against the same compiled marila code in `crates/api`
+//!     (no `cargo build -p marila` skew)
 
 use std::{
     future::Future,
-    net::TcpStream,
     panic::AssertUnwindSafe,
-    path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    path::PathBuf,
     sync::OnceLock,
-    time::{Duration, Instant},
 };
 
 use futures::FutureExt;
@@ -26,6 +38,8 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3vectors::Client;
 use uuid::Uuid;
 
+use marila::ServerConfig;
+
 /// AWS S3 Tables client — separate from the S3 Vectors client because
 /// the two services have different SDK crates.
 pub type TablesClient = aws_sdk_s3tables::Client;
@@ -33,7 +47,7 @@ pub type TablesClient = aws_sdk_s3tables::Client;
 /// Which back-end to point a test at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
-    /// The marila binary running on localhost.
+    /// Marila + RustFS, both embedded in this test process.
     Local,
     /// The real AWS S3 Vectors service in the user's account.
     Aws,
@@ -45,8 +59,48 @@ pub enum Target {
 /// marila's local tests use the same region and the wire shapes match.
 pub const REGION: &str = "eu-west-1";
 
-/// Local marila base URL. Matches `MARILA_BIND_ADDR` default in `crates/api/src/main.rs`.
-pub const LOCAL_ENDPOINT: &str = "http://localhost:8080";
+/// Compatibility shim — older tests use `let _ = MarilaProcess::start();`
+/// as a marker that they need a running marila. The embedded stack now
+/// boots lazily inside [`client`]/[`tables_client`], so `start()` is a
+/// no-op that returns a unit handle.
+///
+/// New tests should just `await` [`client`]/[`tables_client`] directly.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MarilaProcess;
+
+impl MarilaProcess {
+    /// Returns a unit handle so the call site reads identically to the
+    /// old `MarilaProcess::start()` API. The actual stack boot happens
+    /// on first SDK client construction.
+    pub fn start() -> &'static Self {
+        static INSTANCE: OnceLock<MarilaProcess> = OnceLock::new();
+        INSTANCE.get_or_init(MarilaProcess::default)
+    }
+}
+
+/// The marila base URL of the currently-running embedded stack.
+///
+/// Returns the constant local default before the stack has been booted —
+/// useful for tests that only inspect the *shape* of a URL and never
+/// actually dial it. Once any test has called [`client`]/[`tables_client`]
+/// (the moment the stack initialises), this returns the ephemeral
+/// `http://127.0.0.1:<port>` of marila's bound socket.
+///
+/// **Tests that hit the URL directly** (e.g. policy/tag NotImplemented
+/// raw-HTTP probes) should call [`local_endpoint`] *after* awaiting
+/// [`client`] or [`tables_client`] so the stack is up.
+pub const LOCAL_ENDPOINT: &str = "http://127.0.0.1:0";
+
+/// Return the *actual* bound URL of the embedded marila stack. Lazily
+/// boots if it isn't already up. Use this from non-SDK tests that need
+/// to hand-craft an HTTP request.
+///
+/// `async` only for source-compat with the previous harness API — the
+/// underlying [`embedded`] call is synchronous because the work runs on
+/// a dedicated background reactor (see its docstring).
+pub async fn local_endpoint() -> String {
+    embedded().marila_url.clone()
+}
 
 /// Build an S3 Vectors client for the given target.
 pub async fn client(target: Target) -> Client {
@@ -63,13 +117,13 @@ pub async fn tables_client(target: Target) -> TablesClient {
 async fn aws_sdk_config(target: Target) -> aws_config::SdkConfig {
     match target {
         Target::Local => {
-            // Static dummy creds — marila parses but does not verify SigV4
-            // (NG-1). The SDK still requires *some* credentials to sign.
-            let creds = Credentials::new("marila", "marilasecret", None, None, "marila-local");
+            // Dummy creds — marila parses but does not verify SigV4 (NG-1).
+            // The SDK still requires *some* credentials to sign.
+            let creds = Credentials::new("marila", "marilasecret", None, None, "marila-embedded");
             aws_config::defaults(BehaviorVersion::latest())
                 .region(Region::new(REGION))
                 .credentials_provider(creds)
-                .endpoint_url(LOCAL_ENDPOINT)
+                .endpoint_url(embedded().marila_url.clone())
                 .load()
                 .await
         }
@@ -120,134 +174,182 @@ macro_rules! require_aws {
 }
 
 // ---------------------------------------------------------------------------
-// Local marila process management
+// Embedded RustFS + in-process marila
 // ---------------------------------------------------------------------------
 
-/// Path to the compiled `marila` binary in the workspace's `target/debug`.
+/// One per test binary. Holds the RustFS handle (kept alive for the
+/// lifetime of the process) and the bound marila URL.
 ///
-/// We rely on the fact that `cargo test -p marila-integration-tests` is
-/// always invoked from the workspace root (or a sub-crate), so
-/// `CARGO_MANIFEST_DIR/../../target/debug/marila` resolves.
-fn marila_binary_path() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .join("../../target/debug/marila")
-        .canonicalize()
-        .unwrap_or_else(|_| manifest_dir.join("../../target/debug/marila"))
+/// Marila's axum server + RustFS run on a *dedicated background thread*
+/// with its own tokio runtime, not on the per-test runtimes that
+/// `#[tokio::test]` spins up and tears down. That's load-bearing:
+/// `axum::serve` tasks live on whatever runtime spawned them, so if we
+/// spawned on a per-test runtime the listener would die the moment the
+/// first test returned.
+pub struct EmbeddedStack {
+    pub marila_url: String,
+    /// The S3 endpoint marila talks to. Either the docker-compose
+    /// RustFS at `http://127.0.0.1:9000` (when it's already up) or
+    /// the ephemeral URL of the in-process RustFS we boot below.
+    pub rustfs_url: String,
+    /// `true` if we booted RustFS in-process; `false` if we reused the
+    /// already-running docker RustFS. Tables-side tests use this to
+    /// decide whether Lakekeeper can see marila's S3.
+    pub using_embedded_rustfs: bool,
+    /// Held for the lifetime of the process when we booted RustFS
+    /// ourselves; `None` when we're reusing docker.
+    _rustfs: Option<rustfs::embedded::RustFSServer>,
 }
 
-/// RAII guard around a spawned marila process.
-///
-/// `Drop` kills the child so a panicking test never leaks the server.
-pub struct MarilaProcess {
-    child: Option<Child>,
+impl EmbeddedStack {
+    /// True when marila uses an in-process RustFS that nothing outside
+    /// this test process can reach. Tables-side tests should skip in
+    /// this mode because the docker-resident Lakekeeper can't see the
+    /// ephemeral 127.0.0.1:NNNN port.
+    pub fn lakekeeper_can_see_storage(&self) -> bool {
+        !self.using_embedded_rustfs
+    }
 }
 
-impl MarilaProcess {
-    /// Build (if needed) and spawn the marila binary; wait for `/health`.
-    ///
-    /// Idempotent across tests: a `OnceLock`-stored handle is reused, so
-    /// the suite spawns marila exactly once even when multiple tests run
-    /// in parallel.
-    pub fn start() -> &'static Self {
-        static INSTANCE: OnceLock<MarilaProcess> = OnceLock::new();
-        INSTANCE.get_or_init(|| {
-            ensure_built();
-            spawn_marila().expect("spawn marila binary")
+static STACK: OnceLock<EmbeddedStack> = OnceLock::new();
+
+/// Lazily boot the embedded RustFS + marila stack and return a static
+/// reference. **Synchronous** — the work happens on a dedicated reactor
+/// thread (the only way to keep the axum serve task alive across the
+/// per-test tokio runtimes that `#[tokio::test]` builds and tears down).
+pub fn embedded() -> &'static EmbeddedStack {
+    STACK.get_or_init(boot_embedded_stack_blocking)
+}
+
+fn boot_embedded_stack_blocking() -> EmbeddedStack {
+    use std::sync::mpsc::sync_channel;
+    let (tx, rx) = sync_channel::<EmbeddedStack>(1);
+    std::thread::Builder::new()
+        .name("marila-test-reactor".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("marila-test-reactor-worker")
+                .build()
+                .expect("build embedded test runtime");
+            rt.block_on(async move {
+                let stack = boot_embedded_stack_async().await;
+                tx.send(stack).expect("hand stack back to main thread");
+                // Park forever so the axum serve task + the RustFS
+                // background tasks keep running. The reactor only ever
+                // shuts down at process exit.
+                std::future::pending::<()>().await;
+            });
         })
-    }
+        .expect("spawn marila-test-reactor thread");
+    rx.recv().expect("receive embedded stack from reactor")
 }
 
-impl Drop for MarilaProcess {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+async fn boot_embedded_stack_async() -> EmbeddedStack {
+    // NB: we deliberately do *not* install a tracing subscriber here.
+    // The embedded RustFS server's startup calls `rustfs_obs::init_obs`
+    // which sets the process-wide global default subscriber via
+    // `.init()` (not `try_init`). Installing our own first triggers
+    // RustFS's init to panic with "a global default trace dispatcher
+    // has already been set". `RUST_LOG` is still honoured because
+    // RustFS reads it.
+
+    // ---- S3 backend: prefer the docker-compose RustFS at :9000 if
+    // it's already up (lets Lakekeeper share state with marila so the
+    // tables-side tests work). Otherwise boot an in-process RustFS for
+    // the vectors-side tests; the tables-side tests will skip via
+    // `EmbeddedStack::lakekeeper_can_see_storage`. ----
+    const DOCKER_S3: &str = "http://127.0.0.1:9000";
+    let (s3_endpoint, rustfs, using_embedded_rustfs) =
+        if docker_rustfs_reachable().await {
+            tracing::info!(s3 = DOCKER_S3, "reusing docker RustFS");
+            (DOCKER_S3.to_string(), None, false)
+        } else {
+            let port = rustfs::embedded::find_available_port()
+                .expect("pick a free port for rustfs");
+            let r = rustfs::embedded::RustFSServerBuilder::new()
+                .address(format!("127.0.0.1:{port}"))
+                .access_key("marila")
+                .secret_key("marilasecret")
+                .region(REGION)
+                .build()
+                .await
+                .expect("start embedded rustfs");
+            let url = r.endpoint();
+            tracing::info!(s3 = %url, "embedded RustFS ready");
+            (url, Some(r), true)
+        };
+
+    // ---- marila router, mounted on its own ephemeral port ----
+    let state_db = state_db_path();
+    let cfg = ServerConfig::for_tests(s3_endpoint.clone(), state_db);
+    let router = marila::build_router(cfg)
+        .await
+        .expect("build marila router");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind marila ephemeral port");
+    let bound = listener
+        .local_addr()
+        .expect("marila local_addr");
+    let marila_url = format!("http://{bound}");
+    tracing::info!(marila = %marila_url, "embedded marila ready");
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, router).await {
+            tracing::error!(error = %e, "embedded marila serve loop exited");
         }
+    });
+
+    EmbeddedStack {
+        marila_url,
+        rustfs_url: s3_endpoint,
+        using_embedded_rustfs,
+        _rustfs: rustfs,
     }
 }
 
-fn ensure_built() {
-    // Best-effort: build the binary if it's missing. We do *not* rebuild
-    // on every test invocation — that would tank the dev loop. If the
-    // binary is present we trust it; the user runs `cargo build -p marila`
-    // explicitly when they want a refresh, or relies on cargo's own
-    // dependency tracking when running `cargo test --workspace`.
-    let path = marila_binary_path();
-    if path.exists() {
-        return;
-    }
-    let status = Command::new(env!("CARGO"))
-        .args(["build", "-p", "marila"])
-        .status()
-        .expect("invoke cargo build -p marila");
-    assert!(status.success(), "cargo build -p marila failed");
+/// TCP-connect probe — fast (~50ms) and doesn't generate log noise on
+/// the docker-rustfs side if it succeeds.
+async fn docker_rustfs_reachable() -> bool {
+    tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        tokio::net::TcpStream::connect("127.0.0.1:9000"),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false)
 }
 
-fn spawn_marila() -> std::io::Result<MarilaProcess> {
-    let bin = marila_binary_path();
-    // Best-effort kill of any stale marila process left behind by a
-    // previous test invocation that crashed before its Drop ran.
-    // pkill is in coreutils on Linux; missing on macOS — we ignore
-    // failures either way and let the bind attempt below surface the
-    // real error if the port is still held.
-    let _ = std::process::Command::new("pkill")
-        .args(["-f", bin.to_string_lossy().as_ref()])
-        .status();
-    // Give the OS a tick to release the port after the kill.
-    std::thread::sleep(Duration::from_millis(150));
-
-    let child = Command::new(&bin)
-        .env("MARILA_BIND_ADDR", "127.0.0.1:8080")
-        .env("MARILA_S3_ENDPOINT", "http://localhost:9000")
-        .env("MARILA_S3_ACCESS_KEY_ID", "marila")
-        .env("MARILA_S3_SECRET_ACCESS_KEY", "marilasecret")
-        .env("MARILA_S3_REGION", REGION)
-        .env("MARILA_AWS_ACCOUNT_ID", "000000000000")
-        .env("MARILA_STATE_DB", state_db_path())
-        .env(
-            "RUST_LOG",
-            std::env::var("MARILA_TEST_RUST_LOG").unwrap_or_else(|_| {
-                "info,marila=debug,marila_vectors=debug,tower_http=info".to_owned()
-            }),
-        )
-        // Forward marila's logs to the test harness's stderr so test
-        // failures show what the server actually saw.
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-
-    wait_for_health(Duration::from_secs(10));
-    Ok(MarilaProcess { child: Some(child) })
+/// Skip a tables-side test when marila is using an in-process RustFS
+/// (the docker-resident Lakekeeper can't reach an ephemeral
+/// 127.0.0.1:NNNN port). Tables-side tests pass when the full docker
+/// compose stack — rustfs + postgres + lakekeeper — is up.
+#[macro_export]
+macro_rules! require_lakekeeper_shared_storage {
+    () => {
+        if !$crate::harness::embedded().lakekeeper_can_see_storage() {
+            eprintln!(
+                "[skipped] tables-side test needs docker RustFS \
+                 + Lakekeeper running — try `docker compose --profile lakekeeper up -d`"
+            );
+            return;
+        }
+    };
 }
 
 fn state_db_path() -> String {
-    // Per-suite-invocation DB so tests don't see each other's state from
-    // a prior run. Sits under target/ so `cargo clean` wipes it.
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/marila-test-state");
+    // Per-test-binary DB so tests don't see each other's state from a
+    // prior run. Sits under target/ so `cargo clean` wipes it.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/marila-test-state");
     let _ = std::fs::create_dir_all(&dir);
     dir.join(format!("state-{}.duckdb", Uuid::new_v4()))
         .to_string_lossy()
         .into_owned()
 }
 
-fn wait_for_health(timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if TcpStream::connect("127.0.0.1:8080").is_ok() {
-            // Port open — but axum may need a beat to start handling.
-            // The first real SDK call will retry as needed, so this is
-            // enough.
-            std::thread::sleep(Duration::from_millis(50));
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("marila did not start listening on 127.0.0.1:8080 within {timeout:?}");
-}
-
 // ---------------------------------------------------------------------------
-// Bucket naming + cleanup
+// Bucket naming + cleanup (unchanged from the child-process era)
 // ---------------------------------------------------------------------------
 
 /// AWS-safe unique vector-bucket name with a stable test prefix so leaked
@@ -273,7 +375,6 @@ where
         .await;
 
     // Look up the ARN via List (cheapest sequencing) and delete by ARN.
-    // List is the only way without holding the ARN from the body.
     let list = client.list_table_buckets().send().await;
     if let Ok(list) = list
         && let Some(b) = list.table_buckets().iter().find(|b| b.name() == name)
@@ -292,13 +393,6 @@ where
 
 /// Run `body` with a freshly-named bucket whose cleanup is guaranteed to
 /// happen on the test's own tokio runtime — even when the body panics.
-///
-/// We previously used a sync `Drop` that spun up its own runtime; that
-/// races the `aws-sdk-s3vectors` client's HTTP-pool tasks (which are
-/// bound to the test runtime) and silently failed to delete on AWS,
-/// leaking real buckets in the user's account. Catching the panic and
-/// awaiting the delete on the same reactor that issued the create makes
-/// cleanup synchronous and reliable.
 pub async fn with_bucket<F, Fut>(client: Client, prefix: &str, body: F)
 where
     F: FnOnce(Client, String) -> Fut,
@@ -324,11 +418,6 @@ where
 
 /// Like [`with_bucket`] but for tests that need a set of buckets
 /// (e.g. pagination, prefix-filter contracts).
-///
-/// All of `names` are deleted on scope exit — successful, asserted, or
-/// panicked. The body is responsible for creating them; that way the
-/// test can decide which subset to create with marila vs. AWS-only
-/// validation.
 pub async fn with_buckets<F, Fut>(client: Client, names: Vec<String>, body: F)
 where
     F: FnOnce(Client, Vec<String>) -> Fut,
@@ -354,10 +443,6 @@ where
 /// Run `body` inside a freshly-created bucket. Tracks any indexes the
 /// body creates via `add_index` so cleanup can DROP them before
 /// DeleteVectorBucket (which AWS rejects on a non-empty bucket).
-///
-/// The body receives a [`BucketCtx`] for index bookkeeping; calling
-/// `ctx.add_index("name")` after a successful CreateIndex enrolls the
-/// name for cleanup.
 pub async fn with_bucket_and_indexes<F, Fut>(client: Client, prefix: &str, body: F)
 where
     F: FnOnce(Client, BucketCtx) -> Fut,

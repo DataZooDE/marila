@@ -11,7 +11,7 @@
 //! input shapes — and because we're explicitly testing the *envelope*,
 //! not any operation semantics.
 
-use marila_integration_tests::harness::{LOCAL_ENDPOINT, MarilaProcess};
+use marila_integration_tests::harness::local_endpoint;
 
 const UNIMPLEMENTED_OPS: &[&str] = &[
     "PutVectorBucketPolicy",
@@ -24,11 +24,11 @@ const UNIMPLEMENTED_OPS: &[&str] = &[
 
 #[tokio::test]
 async fn local_unimplemented_ops_return_501_with_envelope() {
-    let _marila = MarilaProcess::start();
+    let endpoint = local_endpoint().await;
     let client = reqwest::Client::new();
 
     for op in UNIMPLEMENTED_OPS {
-        let url = format!("{LOCAL_ENDPOINT}/{op}");
+        let url = format!("{endpoint}/{op}");
         let resp = client
             .post(&url)
             .header("Content-Type", "application/json")

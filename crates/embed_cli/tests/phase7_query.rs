@@ -10,13 +10,13 @@ use std::sync::Arc;
 use clap::Parser;
 use marila_embed::cli::{Cli, Command};
 use marila_embed::{put, query};
-use marila_integration_tests::harness::{MarilaProcess, Target, client, unique_bucket_name};
+use marila_integration_tests::harness::{Target, client, local_endpoint, unique_bucket_name};
 
-fn put_args(bucket: &str, index: &str, text: &str) -> marila_embed::cli::PutArgs {
+fn put_args(endpoint: &str, bucket: &str, index: &str, text: &str) -> marila_embed::cli::PutArgs {
     let cli = Cli::try_parse_from([
         "marila-embed",
         "put",
-        "--endpoint-url", "http://localhost:8080",
+        "--endpoint-url", endpoint,
         "--vector-bucket-name", bucket,
         "--index-name", index,
         "--embedding-provider", "stub",
@@ -30,11 +30,11 @@ fn put_args(bucket: &str, index: &str, text: &str) -> marila_embed::cli::PutArgs
     }
 }
 
-fn query_args(bucket: &str, index: &str, q: &str, k: u32) -> marila_embed::cli::QueryArgs {
+fn query_args(endpoint: &str, bucket: &str, index: &str, q: &str, k: u32) -> marila_embed::cli::QueryArgs {
     let cli = Cli::try_parse_from([
         "marila-embed",
         "query",
-        "--endpoint-url", "http://localhost:8080",
+        "--endpoint-url", endpoint,
         "--vector-bucket-name", bucket,
         "--index-name", index,
         "--embedding-provider", "stub",
@@ -52,7 +52,7 @@ fn query_args(bucket: &str, index: &str, q: &str, k: u32) -> marila_embed::cli::
 
 #[tokio::test]
 async fn local_query_returns_exact_match_first() {
-    let _marila = MarilaProcess::start();
+    let endpoint = local_endpoint().await;
     let c = client(Target::Local).await;
     let bucket = unique_bucket_name("q7");
     let index = "phase7";
@@ -63,7 +63,7 @@ async fn local_query_returns_exact_match_first() {
         .await
         .expect("CreateVectorBucket");
 
-    let result = run(&bucket, index).await;
+    let result = run(&endpoint, &bucket, index).await;
 
     // Cleanup
     let _ = c.delete_index().vector_bucket_name(&bucket).index_name(index).send().await;
@@ -72,10 +72,10 @@ async fn local_query_returns_exact_match_first() {
     result.expect("phase7");
 }
 
-async fn run(bucket: &str, index: &str) -> anyhow::Result<()> {
+async fn run(endpoint: &str, bucket: &str, index: &str) -> anyhow::Result<()> {
     // Put three known strings.
     for s in ["alpha", "beta", "gamma"] {
-        put::run(put_args(bucket, index, s)).await?;
+        put::run(put_args(endpoint, bucket, index, s)).await?;
     }
     // List to confirm three vectors landed.
     let c = client(Target::Local).await;
@@ -89,7 +89,7 @@ async fn run(bucket: &str, index: &str) -> anyhow::Result<()> {
 
     // Query for "alpha" — should be top-1 since the stub is deterministic
     // and exact-match has distance 0 (or near-0 with cosine).
-    let args = query_args(bucket, index, "alpha", 3);
+    let args = query_args(endpoint, bucket, index, "alpha", 3);
     // Sanity: actually call the SDK and inspect the response ourselves so
     // the test doesn't depend on stdout capture from query::run().
     use aws_sdk_s3vectors::types::VectorData;

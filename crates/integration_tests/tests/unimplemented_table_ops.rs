@@ -2,7 +2,7 @@
 //! encryption / metrics / replication / rename ops. Mirrors the
 //! s3vectors equivalent (`tests/unimplemented_ops.rs`).
 
-use marila_integration_tests::harness::{LOCAL_ENDPOINT, MarilaProcess};
+use marila_integration_tests::harness::local_endpoint;
 
 /// (method, path, op-name) tuples. Path uses a synthetic ARN — we only
 /// care about the envelope shape, not the bucket actually existing.
@@ -32,11 +32,11 @@ const TUPLES: &[(&str, &str, &str)] = &[
 
 #[tokio::test]
 async fn local_unimplemented_table_ops_return_501_with_envelope() {
-    let _marila = MarilaProcess::start();
+    let endpoint = local_endpoint().await;
     let client = reqwest::Client::new();
 
     for (method, path, op_name) in TUPLES {
-        let url = format!("{LOCAL_ENDPOINT}{path}");
+        let url = format!("{endpoint}{path}");
         let req = match *method {
             "GET" => client.get(&url),
             "PUT" => client.put(&url).body("{}"),

@@ -1,9 +1,17 @@
 name: marila
 
-# Minimal sidecar stack for the current vertical slice (CreateVectorBucket).
-# Only RustFS is started today. Postgres + Lakekeeper services for the
-# tables-side work land later (their images are pre-pulled so the first
-# `docker compose up` won't have to wait on a registry round-trip).
+# Sidecar stack for marila. Two ways to run:
+#
+#   `docker compose up -d rustfs`               — vectors-side only
+#   `docker compose --profile lakekeeper up -d` — full tables-side stack
+#                                                 (rustfs + postgres + lakekeeper)
+#
+# The integration-test harness auto-detects whether RustFS is reachable
+# at :9000 (this docker container). If yes, marila uses it — so the
+# tables-side tests work end-to-end with Lakekeeper. If no, the harness
+# embeds RustFS in-process (`crates/integration_tests/src/harness.rs`),
+# vectors-side tests still run, and tables-side tests skip with a clear
+# message. See CLAUDE.md C-12.
 
 services:
   rustfs:

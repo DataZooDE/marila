@@ -1,0 +1,6 @@
+# RustFS enables `tokio`'s `io-uring` feature on Linux for its server
+# data plane. That feature is gated behind `--cfg tokio_unstable`, so
+# the whole workspace has to opt in. Removing rustfs (e.g. dropping the
+# embedded-stack test harness) lets you delete this file.
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

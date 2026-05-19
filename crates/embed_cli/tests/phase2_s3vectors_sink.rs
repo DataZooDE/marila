@@ -9,13 +9,13 @@
 use clap::Parser;
 use marila_embed::cli::{Cli, Command};
 use marila_embed::put;
-use marila_integration_tests::harness::{MarilaProcess, Target, client, unique_bucket_name};
+use marila_integration_tests::harness::{Target, client, local_endpoint, unique_bucket_name};
 
-fn put_args(bucket: &str, index: &str, text: &str) -> marila_embed::cli::PutArgs {
+fn put_args(endpoint: &str, bucket: &str, index: &str, text: &str) -> marila_embed::cli::PutArgs {
     let cli = Cli::try_parse_from([
         "marila-embed",
         "put",
-        "--endpoint-url", "http://localhost:8080",
+        "--endpoint-url", endpoint,
         "--vector-bucket-name", bucket,
         "--index-name", index,
         "--embedding-provider", "stub",
@@ -31,7 +31,7 @@ fn put_args(bucket: &str, index: &str, text: &str) -> marila_embed::cli::PutArgs
 
 #[tokio::test]
 async fn local_put_text_value_creates_index_and_lands_key() {
-    let _marila = MarilaProcess::start();
+    let endpoint = local_endpoint().await;
     let c = client(Target::Local).await;
 
     let bucket = unique_bucket_name("embedcli");
@@ -43,16 +43,18 @@ async fn local_put_text_value_creates_index_and_lands_key() {
         .await
         .expect("CreateVectorBucket");
 
-    let outcome = put_then_cleanup(bucket.clone(), index.into(), c.clone()).await;
+    let outcome =
+        put_then_cleanup(endpoint, bucket.clone(), index.into(), c.clone()).await;
     outcome.expect("phase2 e2e");
 }
 
 async fn put_then_cleanup(
+    endpoint: String,
     bucket: String,
     index: String,
     c: aws_sdk_s3vectors::Client,
 ) -> anyhow::Result<()> {
-    let result = run_phase2(bucket.clone(), index.clone()).await;
+    let result = run_phase2(endpoint, bucket.clone(), index.clone()).await;
 
     // Cleanup: delete index (if present) then bucket. Tolerate errors so
     // an assertion failure isn't masked by cleanup noise.
@@ -71,8 +73,8 @@ async fn put_then_cleanup(
     result
 }
 
-async fn run_phase2(bucket: String, index: String) -> anyhow::Result<()> {
-    let args = put_args(&bucket, &index, "phase2-e2e content");
+async fn run_phase2(endpoint: String, bucket: String, index: String) -> anyhow::Result<()> {
+    let args = put_args(&endpoint, &bucket, &index, "phase2-e2e content");
 
     // Hit the real flow via `put::run`, which will build the s3vectors
     // sink and CreateIndex on first put.

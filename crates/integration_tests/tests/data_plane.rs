@@ -396,10 +396,11 @@ async fn meta_round_trip(c: Client, ctx: BucketCtx) {
 
 #[tokio::test]
 async fn local_put_vectors_writes_snapshot_to_rustfs() {
+    use marila_integration_tests::harness::embedded;
     use marila_storage::{BucketStore, S3BucketStore, S3Config};
 
-    let _marila = MarilaProcess::start();
     let c = client(Target::Local).await;
+    let rustfs_endpoint = embedded().rustfs_url.clone();
     with_bucket_and_indexes(c, "dpsnap", |c, ctx| async move {
         let index = "myx".to_owned();
         provision_index(&c, &ctx, &index).await;
@@ -413,9 +414,11 @@ async fn local_put_vectors_writes_snapshot_to_rustfs() {
             .expect("PutVectors");
 
         // Read the snapshot directly from RustFS via the storage adapter
-        // — the path is `<bucket>/<index>/<key>.json`.
+        // — the path is `<bucket>/<index>/<key>.json`. We use the
+        // *embedded* RustFS's ephemeral URL, not the docker default,
+        // so the test runs without docker.
         let storage = S3BucketStore::connect(S3Config {
-            endpoint: "http://localhost:9000".into(),
+            endpoint: rustfs_endpoint,
             access_key_id: "marila".into(),
             secret_access_key: "marilasecret".into(),
             region: "eu-west-1".into(),

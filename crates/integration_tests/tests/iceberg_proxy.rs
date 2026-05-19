@@ -5,7 +5,7 @@
 //! run without spinning up DuckDB. The full end-to-end is exercised by
 //! `demo/lakekeeper_verify.sql` when a human runs it manually.
 
-use marila_integration_tests::harness::{LOCAL_ENDPOINT, MarilaProcess};
+use marila_integration_tests::harness::local_endpoint;
 use uuid::Uuid;
 
 /// We hit the Lakekeeper `config` endpoint via the marila proxy. It's
@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// containing `defaults` and `overrides` fields (Iceberg REST contract).
 #[tokio::test]
 async fn local_iceberg_proxy_forwards_to_lakekeeper() {
-    let _marila = MarilaProcess::start();
+    let endpoint = local_endpoint().await;
 
     // Need a warehouse to hit. Look up the bootstrap one created by the
     // docker-compose one-shot. If it isn't there, skip — the compose
@@ -54,7 +54,7 @@ async fn local_iceberg_proxy_forwards_to_lakekeeper() {
     // Create namespace via the proxy.
     let create = client
         .post(format!(
-            "{LOCAL_ENDPOINT}/iceberg/v1/{warehouse_id}/namespaces"
+            "{endpoint}/iceberg/v1/{warehouse_id}/namespaces"
         ))
         .json(&serde_json::json!({"namespace": [ns], "properties": {}}))
         .send()
@@ -70,7 +70,7 @@ async fn local_iceberg_proxy_forwards_to_lakekeeper() {
     // List namespaces via the proxy and verify our entry comes back.
     let list = client
         .get(format!(
-            "{LOCAL_ENDPOINT}/iceberg/v1/{warehouse_id}/namespaces"
+            "{endpoint}/iceberg/v1/{warehouse_id}/namespaces"
         ))
         .send()
         .await
@@ -96,13 +96,14 @@ async fn local_iceberg_proxy_forwards_to_lakekeeper() {
     );
 
     // Clean up.
+    let created = names
+        .iter()
+        .find(|n| n.starts_with("marila_proxy_probe_"))
+        .cloned()
+        .unwrap_or_default();
     let _ = client
         .delete(format!(
-            "{LOCAL_ENDPOINT}/iceberg/v1/{warehouse_id}/namespaces/{}",
-            names
-                .iter()
-                .find(|n| n.starts_with("marila_proxy_probe_"))
-                .unwrap()
+            "{endpoint}/iceberg/v1/{warehouse_id}/namespaces/{created}"
         ))
         .send()
         .await;

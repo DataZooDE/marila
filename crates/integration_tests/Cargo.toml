@@ -10,8 +10,10 @@ publish.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+marila = { path = "../api" }
 marila-storage.workspace = true
 
+axum.workspace = true
 aws-config.workspace = true
 aws-sdk-s3vectors.workspace = true
 aws-sdk-s3tables.workspace = true
@@ -25,6 +27,12 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 futures = "0.3"
 reqwest.workspace = true
+
+# Embedded RustFS for the test harness. Pinned at the `1.0.0-beta.3`
+# tag (not yet published to crates.io as of 2026-05-19; the crates.io
+# `rustfs = "0.0.2"` package is unrelated). Default features off so we
+# skip ftps/webdav/sftp protocol stacks in the test build.
+rustfs = { git = "https://github.com/rustfs/rustfs", tag = "1.0.0-beta.3", default-features = false }
 
 [dev-dependencies]
 tokio.workspace = true
