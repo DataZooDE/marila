@@ -39,6 +39,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 EMBED="${EMBED:-$REPO_ROOT/target/debug/marila-embed}"
+
+# lopdf is loud about pages without a ToUnicode CMap — common in older
+# German PDFs that embed TrueType fonts. Hide its per-page warnings by
+# default; the pipeline summary still reports the cumulative
+# parse-failure count. Override RUST_LOG to dig in for a specific run.
+export RUST_LOG="${RUST_LOG:-info,lopdf=error,marila_embed::parse::pdf=error}"
 BUCKET="${BUCKET:-parlis}"
 INDEX="${INDEX:-drucksachen}"
 MAX_CHUNKS="${MAX_CHUNKS:-20000}"
