@@ -1,6 +1,8 @@
 //! Chunk stage — Chunker trait + dispatch over `--chunk-strategy`.
 
 pub mod fixed;
+pub mod markdown;
+pub mod sentence;
 pub mod types;
 
 pub use types::*;
@@ -26,9 +28,8 @@ pub struct ChunkConfig {
 pub fn build(strategy: ChunkStrategy, cfg: ChunkConfig) -> Box<dyn Chunker> {
     match strategy {
         ChunkStrategy::Off => Box::new(fixed::WholeDocument),
-        // Phase 3 only ships `fixed`; Phase 4 wires markdown + sentence.
-        ChunkStrategy::Fixed | ChunkStrategy::Markdown | ChunkStrategy::Sentence => {
-            Box::new(fixed::FixedChunker { cfg })
-        }
+        ChunkStrategy::Fixed => Box::new(fixed::FixedChunker { cfg }),
+        ChunkStrategy::Markdown => Box::new(markdown::MarkdownChunker { cfg }),
+        ChunkStrategy::Sentence => Box::new(sentence::SentenceChunker { cfg }),
     }
 }
