@@ -5,15 +5,17 @@ Three demos that satisfy the acceptance criteria in
 the patterns AWS shows in its own blog posts rather than just proving
 the wire works:
 
-- **[`demo_vectors.py`](demo_vectors.py)** — RAG over marila's own docs.
-  Chunks `README.md`, `CLAUDE.md`, and `doc/*.md`, embeds each chunk via
-  OpenAI's `text-embedding-3-small` (1536-d, ~$0.0004 per run), stores
-  them with `{file, chunk_idx, section}` metadata, then answers four
-  natural-language questions with citations. One query is metadata-
-  filtered (`file = 'doc/REQUIREMENTS.md'`) to show the cost-control
-  pattern Bedrock uses.
+- **[`demo_vectors.sh`](demo_vectors.sh)** — RAG over marila's own docs,
+  driven by the in-tree [`marila-embed`](../crates/embed_cli/) CLI.
+  Walks `README.md`, `CLAUDE.md`, and `doc/*.md`; markdown-aware
+  chunking; embeds via OpenAI's `text-embedding-3-small`; auto-creates
+  the index; then answers three natural-language questions (one
+  metadata-filtered) and renders the top-3 hits as a table.
   - Pattern from the [S3 Vectors GA announcement][vectors-ga] (chunk
-    a PDF, embed with Titan, answer with citations).
+    a PDF, embed, answer with citations).
+  - The earlier `demo_vectors.py` is preserved at the same path for now
+    in case you want to compare implementations; it is no longer part
+    of the §9 acceptance demos.
 - **[`demo_tables.py`](demo_tables.py)** — sales analytics. Loads a
   deterministic 1,002-row synthetic CSV into an Iceberg table backed
   by Lakekeeper, runs aggregate queries (top region by revenue, top
@@ -47,7 +49,7 @@ export OPENAI_API_KEY=sk-...
 ## Running
 
 ```bash
-demo/.venv/bin/python demo/demo_vectors.py     # RAG over marila docs
+bash demo/demo_vectors.sh                      # RAG over marila docs (CLI)
 demo/.venv/bin/python demo/demo_tables.py      # sales analytics
 duckdb < demo/lakekeeper_verify.sql            # minimal SQL smoke
 ```

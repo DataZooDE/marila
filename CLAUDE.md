@@ -539,9 +539,11 @@ in `doc/GAP_ANALYSIS.md`.
 | D-12 mitigation: `QueryVectors` with filter pulls `topK * 100` HNSW candidates, then applies the WHERE clause, then truncates to topK — buys recall against restrictive filters without leaving the single-SQL pass | ✅ done | covered by `tests/query_vectors.rs::*_query_vectors_metadata_filter_excludes_non_matching` |
 | FV-5: `QueryVectors` oversample-and-post-filter (100× when filter present) — D-12 recall mitigation | ✅ done | covered by `*_query_vectors_metadata_filter_excludes_non_matching` |
 | FV-7: 501 `NotImplementedException` for policy + tagging ops | ✅ done | `tests/unimplemented_ops.rs::local_unimplemented_ops_return_501_with_envelope` |
+| `marila-embed` CLI per `doc/EMBED_CLI_SPEC.md`: 4-stage streaming pipeline (source → parse → chunk → embed → put), bounded mpsc channels, pluggable EmbeddingProvider trait (stub / openai / ollama-`embeddinggemma:latest`), pluggable Sink trait (in-memory / s3vectors with auto-create-index), 8 parser formats (text/md/html/pdf/docx/odt/pptx/xlsx), markdown + sentence + fixed chunkers, JSONL checkpoint + resume, indicatif progress + peak-RSS telemetry, jittered exp-backoff retry on 429/5xx | ✅ done | `crates/embed_cli/tests/phase{0..10}_*.rs` — 27 unit + 27 integration (incl. live OpenAI + Ollama gated tests + `#[ignore]`-gated 100k-file scale test) |
 
 Crates currently in the workspace: `api` (bin `marila`), `aws_compat`,
-`core`, `storage`, `vectors`, `tables`, `integration_tests`.
+`core`, `storage`, `vectors`, `tables`, `embed_cli` (bin `marila-embed`),
+`integration_tests`.
 
 ## What's next
 
