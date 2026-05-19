@@ -1,4 +1,5 @@
-//! Pluggable embedding providers — Phase 0 surface only.
+//! Pluggable embedding providers.
 
+pub mod stub;
 pub mod types;
 pub use types::*;

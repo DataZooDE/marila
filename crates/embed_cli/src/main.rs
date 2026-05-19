@@ -1,18 +1,20 @@
 use anyhow::Result;
 use clap::Parser;
 use marila_embed::cli::{Cli, Command};
+use marila_embed::put;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     cli.init_tracing();
     match cli.command {
-        Command::Put(_) => anyhow::bail!(
-            "`marila-embed put` is wired in phases 1–6; \
-             the Phase 0 skeleton only proves the CLI parses"
-        ),
-        Command::Query(_) => anyhow::bail!(
-            "`marila-embed query` is wired in phase 7"
-        ),
+        Command::Put(args) => {
+            let outcome = put::run(args).await?;
+            tracing::info!(chunks = outcome.chunks, "put finished");
+            Ok(())
+        }
+        Command::Query(_) => {
+            anyhow::bail!("`marila-embed query` lands in phase 7")
+        }
     }
 }

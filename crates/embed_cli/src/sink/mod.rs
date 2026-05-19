@@ -1,4 +1,5 @@
-//! Where embedded chunks land. Phase 0 surface; impls in Phase 1+.
+//! Where embedded chunks land.
 
+pub mod in_memory;
 pub mod types;
 pub use types::*;
