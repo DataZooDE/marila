@@ -65,7 +65,7 @@ INDEX = os.environ.get("INDEX", "drucksachen")
 
 OLLAMA_HOST = os.environ.get("OLLAMA_ENDPOINT", "http://localhost:11434")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "embeddinggemma:latest")
-CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-oss:latest")
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "gemma4:latest")
 
 # Agent loop safety cap — pathological models can keep calling the tool
 # forever. 50 is generous: deep reasoning chains over the parlis corpus
