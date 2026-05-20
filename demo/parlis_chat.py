@@ -84,13 +84,17 @@ SYSTEM_PROMPT = textwrap.dedent(
       - Always search before answering substantive questions. Don't
         rely on training-data recall for facts about specific
         Drucksachen.
-      - If the first search is too broad or returns weak hits, refine
-        and search again. Up to 3-4 searches per turn is fine.
+      - Use AT MOST 3 searches per question. After that, commit to an
+        answer based on what you have — even if the evidence is partial
+        or weak, you must summarise findings instead of searching again.
+      - If the first search returns hits with cosine distance > 0.6,
+        the corpus probably doesn't have a clean answer; say so and
+        stop searching.
       - Cite every factual claim by source path, e.g. `[WP17/01234.pdf]`.
       - When a question is in German, answer in German; otherwise mirror
         the user's language.
-      - If the search returns nothing useful, say so plainly — don't
-        invent citations.
+      - If the search returned nothing useful, say so plainly — don't
+        invent citations. A short honest answer beats a long invented one.
     """
 ).strip()
 
@@ -375,9 +379,57 @@ def run_turn(
                     }
                 )
     else:
-        final_text = (
-            "(agent hit MAX_TOOL_HOPS without a final answer — try /reset and rephrase)"
+        # Hit the tool-hop cap without the model writing a final answer.
+        # Rather than discard all the search results we accumulated,
+        # force a synthesis turn: one more chat() call with tools
+        # disabled, asking the model to commit to an answer based on
+        # what's already in its context window.
+        if state.verbose:
+            print(
+                dim(
+                    f"  [synthesis] tool budget exhausted — forcing one "
+                    f"no-tools call to commit to an answer over "
+                    f"{len(state.last_sources)} retrieved sources"
+                )
+            )
+        state.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "You have exhausted your search budget. Produce the "
+                    "final answer NOW, based strictly on the search results "
+                    "already in your context. Cite source paths in brackets, "
+                    "e.g. `[17_1234_D.pdf]`. If the evidence is weak or the "
+                    "corpus did not contain a clear answer, say so plainly "
+                    "in 1-2 sentences — do not invent details and do not "
+                    "ask to search more."
+                ),
+            }
         )
+        resp = ollama_client.chat(
+            model=state.chat_model,
+            messages=state.messages,
+            tools=[],  # critical: no more tool calls
+        )
+        msg = getattr(resp, "message", None) or (
+            resp.get("message") if isinstance(resp, dict) else None
+        ) or {}
+        state.messages.append(_message_to_dict(msg))
+        content = _get(msg, "content") or ""
+        thinking = _get(msg, "thinking") or ""
+        if content.strip():
+            final_text = content
+        elif thinking.strip():
+            final_text = (
+                "(synthesis turn produced no `content` channel — falling "
+                "back to thinking)\n\n" + thinking
+            )
+        else:
+            final_text = (
+                "(agent burned its tool budget AND the synthesis turn "
+                "produced an empty response — try `/reset` and a more "
+                "specific question, or `/model granite4:latest`)"
+            )
 
     return final_text
 
