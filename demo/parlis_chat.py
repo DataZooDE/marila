@@ -175,6 +175,13 @@ class SourcePreview(ModalScreen[None]):
 
 
 class ParlisChat(App[None]):
+    # Pane sizing — percentages so we can resize at runtime via F-keys
+    # without re-running compose(). The reactive setters in
+    # `_apply_layout` write `styles.width / height` back onto the
+    # mounted widgets.
+    CHAT_WIDTH_MIN, CHAT_WIDTH_MAX = 30, 85
+    VERBOSE_HEIGHT_MIN, VERBOSE_HEIGHT_MAX = 15, 85
+
     CSS = """
     Screen {
         layers: base modal;
@@ -184,22 +191,25 @@ class ParlisChat(App[None]):
         height: 1fr;
     }
     #chat-pane {
-        width: 2fr;
+        width: 66%;
         border: round $primary;
     }
     #side-pane {
-        width: 1fr;
+        width: 34%;
         layout: vertical;
     }
     #verbose-pane {
-        height: 1fr;
+        height: 50%;
         border: round $secondary;
     }
     #sources-pane {
-        height: 1fr;
+        height: 50%;
         border: round $secondary;
     }
     #sources-list {
+        height: 1fr;
+    }
+    #chat-log, #verbose-log {
         height: 1fr;
     }
     Input {
@@ -221,11 +231,21 @@ class ParlisChat(App[None]):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("ctrl+r", "reset", "Reset chat"),
         Binding("ctrl+l", "clear_chat", "Clear pane"),
-        Binding("ctrl+s", "focus_sources", "Focus sources"),
-        Binding("ctrl+b", "focus_input", "Focus input"),
+        # `ctrl+a` is Emacs-style "beginning-of-line" inside Input and
+        # gets consumed there, so we use F2 + F3 + F4 for pane focus
+        # which no widget binds by default.
+        Binding("f2", "focus_input", "→ input"),
+        Binding("f3", "focus_chat", "→ chat (scroll)"),
+        Binding("f4", "focus_sources", "→ sources"),
+        Binding("f6", "shrink_chat", "Chat ←"),
+        Binding("f7", "grow_chat", "Chat →"),
+        Binding("f8", "shrink_verbose", "Verbose ↑"),
+        Binding("f9", "grow_verbose", "Verbose ↓"),
     ]
 
     busy: reactive[bool] = reactive(False)
+    chat_width_pct: reactive[int] = reactive(66)
+    verbose_height_pct: reactive[int] = reactive(50)
 
     def __init__(self) -> None:
         super().__init__()
@@ -243,9 +263,13 @@ class ParlisChat(App[None]):
         yield Header(show_clock=True)
         with Horizontal(id="main"):
             with Vertical(id="chat-pane"):
-                yield Static("chat", classes="pane-title")
+                yield Static("chat  (F3 focus · then ↑↓ / PgUp PgDn / wheel scroll)", classes="pane-title")
                 yield RichLog(
-                    id="chat-log", wrap=True, markup=True, highlight=False,
+                    id="chat-log",
+                    wrap=True,
+                    markup=True,
+                    highlight=False,
+                    auto_scroll=True,
                 )
             with Vertical(id="side-pane"):
                 with Vertical(id="verbose-pane"):
@@ -256,15 +280,16 @@ class ParlisChat(App[None]):
                         markup=True,
                         highlight=False,
                         max_lines=2000,
+                        auto_scroll=True,
                     )
                 with Vertical(id="sources-pane"):
                     yield Static(
-                        "sources  (↑/↓ select · p preview)",
+                        "sources  (F4 focus · ↑↓ select · p preview)",
                         classes="pane-title",
                     )
                     yield ListView(id="sources-list")
         yield Input(
-            placeholder="ask a question (↑/↓ history · ctrl+r reset · ctrl+c quit)",
+            placeholder="ask (↑↓ history · F2/F3/F4 focus · F6-F9 resize · ctrl+r reset · ctrl+c quit)",
             id="question",
         )
         yield Footer()
@@ -315,6 +340,48 @@ class ParlisChat(App[None]):
 
     def action_focus_input(self) -> None:
         self.query_one("#question", Input).focus()
+
+    def action_focus_chat(self) -> None:
+        """Focus the chat log so PgUp / PgDn / arrows / mouse wheel scroll it."""
+        chat = self.query_one("#chat-log", RichLog)
+        chat.can_focus = True   # RichLog isn't focus-by-default in older textual
+        chat.focus()
+
+    # ----- pane resize -----
+
+    def action_shrink_chat(self) -> None:
+        self.chat_width_pct = max(self.CHAT_WIDTH_MIN, self.chat_width_pct - 5)
+        self._apply_layout()
+
+    def action_grow_chat(self) -> None:
+        self.chat_width_pct = min(self.CHAT_WIDTH_MAX, self.chat_width_pct + 5)
+        self._apply_layout()
+
+    def action_shrink_verbose(self) -> None:
+        self.verbose_height_pct = max(
+            self.VERBOSE_HEIGHT_MIN, self.verbose_height_pct - 10
+        )
+        self._apply_layout()
+
+    def action_grow_verbose(self) -> None:
+        self.verbose_height_pct = min(
+            self.VERBOSE_HEIGHT_MAX, self.verbose_height_pct + 10
+        )
+        self._apply_layout()
+
+    def _apply_layout(self) -> None:
+        """Write current reactive sizes onto the mounted panes."""
+        try:
+            chat_pane = self.query_one("#chat-pane")
+            side_pane = self.query_one("#side-pane")
+            verbose_pane = self.query_one("#verbose-pane")
+            sources_pane = self.query_one("#sources-pane")
+        except Exception:  # noqa: BLE001 — pre-mount call
+            return
+        chat_pane.styles.width = f"{self.chat_width_pct}%"
+        side_pane.styles.width = f"{100 - self.chat_width_pct}%"
+        verbose_pane.styles.height = f"{self.verbose_height_pct}%"
+        sources_pane.styles.height = f"{100 - self.verbose_height_pct}%"
 
     # ----- input + history -----
 
