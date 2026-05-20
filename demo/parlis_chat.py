@@ -1,591 +1,558 @@
-#!/usr/bin/env python3
-"""
-Agentic RAG chat over a marila vector index.
+"""Textual TUI for agentic RAG over the parlis-indexed marila vectors.
 
-Defaults to talking to the corpus that `demo/index_parlis.sh` indexed
-(German parliamentary PDFs), but `BUCKET` / `INDEX` env vars retarget it
-at any marila index.
+Layout (terminals ≥ 100 cols):
 
-How the agent works
--------------------
-Local Ollama hosts BOTH the embedding model (embeddinggemma) and the
-chat model (default `gpt-oss:latest` — supports tool calling). The chat
-model is given exactly one tool, `search_parlis`. The agent loop:
+    ┌───────────────────────────────┬───────────────────────────────┐
+    │  chat                         │  hops (verbose)               │
+    │  (you / assistant turns)      │                               │
+    │                               │  [hop 1/50] gemma4 …          │
+    │  you> Welche Anfragen …       │   ↪ search "Windenergie", k=5 │
+    │                               │   ← content=480ch, …          │
+    │  assistant>                   │                               │
+    │  Die Drucksachen behandeln …  ├───────────────────────────────┤
+    │                               │  sources                      │
+    │                               │  ▶ 0.508  17_1341_D.pdf       │
+    │                               │    0.523  17_10074_D.pdf      │
+    │                               │    …                          │
+    ├───────────────────────────────┴───────────────────────────────┤
+    │ > ask a question…                                             │
+    │ ↑/↓ history · p preview · ctrl+r reset · ctrl+l clear · ^c    │
+    └───────────────────────────────────────────────────────────────┘
 
-  1. User types a question.
-  2. The chat model decides on its own whether to call the search tool,
-     how to phrase the query (it may translate, expand, or split into
-     sub-queries), and how many times to call it.
-  3. Each call: embed the query via embeddinggemma → QueryVectors on
-     marila → return top-k hits with source path, snippet, distance.
-  4. The model loops on its own tool calls until it has enough context,
-     then writes a final answer with `[source]` citations.
+Run:
+    cd demo && uv run ./parlis_chat.py
 
-The whole conversation history persists across turns so follow-ups
-(e.g. "and the Bundestag's response?") see the prior answer.
-
-Usage
------
-  source demo/.venv/bin/activate         # or `uv venv` then `uv pip install -e demo/`
-  python demo/parlis_chat.py
-
-Slash commands
---------------
-  /sources       Print sources cited by the last assistant turn.
-  /reset         Wipe conversation history.
-  /verbose       Toggle showing tool calls + tool results inline.
-  /model NAME    Switch chat model (must support `tools` capability).
-  /k N           Change default top-k for new searches.
-  /quit          Exit.
+Env knobs (see `parlis_agent.py` for the full list):
+    BUCKET=parlis  INDEX=drucksachen  CHAT_MODEL=gemma4:latest
+    EMBED_MODEL=embeddinggemma:latest  MARILA_ENDPOINT=http://localhost:8080
 """
 
 from __future__ import annotations
 
-import json
-import os
-import sys
-import textwrap
-from dataclasses import dataclass, field
+import asyncio
+from datetime import datetime
 from typing import Any
 
-import boto3
-import ollama
+from textual import work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Container, Horizontal, Vertical
+from textual.message import Message
+from textual.reactive import reactive
+from textual.screen import ModalScreen
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    Markdown,
+    RichLog,
+    Static,
+)
+
+from parlis_agent import (
+    AgentEvent,
+    BUCKET,
+    CHAT_MODEL,
+    ChatState,
+    EMBED_MODEL,
+    INDEX,
+    MARILA_ENDPOINT,
+    OLLAMA_HOST,
+    ChatState,
+    fetch_full_chunk,
+    make_ollama_client,
+    make_vectors_client,
+    preflight_index,
+    run_turn,
+)
+
 
 # ---------------------------------------------------------------------------
-# Config
+# Custom messages — let the @work thread push state back to the main loop
 # ---------------------------------------------------------------------------
 
-MARILA_ENDPOINT = os.environ.get("MARILA_ENDPOINT", "http://localhost:8080")
-MARILA_REGION = os.environ.get("MARILA_REGION", "eu-west-1")
-MARILA_ACCESS_KEY = os.environ.get("MARILA_ACCESS_KEY_ID", "marila")
-MARILA_SECRET = os.environ.get("MARILA_SECRET_ACCESS_KEY", "marilasecret")
 
-BUCKET = os.environ.get("BUCKET", "parlis")
-INDEX = os.environ.get("INDEX", "drucksachen")
+class AgentEventMessage(Message):
+    """An `AgentEvent` produced by the agent thread, marshalled across
+    to the Textual event loop so widgets can update safely."""
 
-OLLAMA_HOST = os.environ.get("OLLAMA_ENDPOINT", "http://localhost:11434")
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "embeddinggemma:latest")
-CHAT_MODEL = os.environ.get("CHAT_MODEL", "gemma4:latest")
+    def __init__(self, event: AgentEvent) -> None:
+        super().__init__()
+        self.event = event
 
-# Agent loop safety cap — pathological models can keep calling the tool
-# forever. 50 is generous: deep reasoning chains over the parlis corpus
-# can legitimately need many refinements. Override with the env var if
-# you want a tighter ceiling.
-MAX_TOOL_HOPS = int(os.environ.get("MAX_TOOL_HOPS", "50"))
 
-DEFAULT_K = int(os.environ.get("DEFAULT_K", "5"))
+class AssistantAnswer(Message):
+    """Final answer string from a completed `run_turn`."""
 
-SYSTEM_PROMPT = textwrap.dedent(
-    """\
-    You are a research assistant for German parliamentary documents
-    (Drucksachen) indexed in a vector store. Answer the user's question
-    by calling the `search_parlis` tool with focused, well-phrased
-    queries.
+    def __init__(self, text: str, sources: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self.text = text
+        self.sources = sources
 
-    Rules:
-      - Always search before answering substantive questions. Don't
-        rely on training-data recall for facts about specific
-        Drucksachen.
-      - Use AT MOST 3 searches per question. After that, commit to an
-        answer based on what you have — even if the evidence is partial
-        or weak, you must summarise findings instead of searching again.
-      - If the first search returns hits with cosine distance > 0.6,
-        the corpus probably doesn't have a clean answer; say so and
-        stop searching.
-      - Cite every factual claim by source path, e.g. `[WP17/01234.pdf]`.
-      - When a question is in German, answer in German; otherwise mirror
-        the user's language.
-      - If the search returned nothing useful, say so plainly — don't
-        invent citations. A short honest answer beats a long invented one.
+
+class AgentError(Message):
+    def __init__(self, err: str) -> None:
+        super().__init__()
+        self.err = err
+
+
+# ---------------------------------------------------------------------------
+# Source-preview modal
+# ---------------------------------------------------------------------------
+
+
+class SourcePreview(ModalScreen[None]):
+    """Modal popup showing a chunk's full text + metadata. Esc to close."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss(None)", "Close"),
+        Binding("q", "dismiss(None)", "Close"),
+    ]
+
+    DEFAULT_CSS = """
+    SourcePreview {
+        align: center middle;
+    }
+    #preview-box {
+        width: 80%;
+        height: 80%;
+        background: $surface;
+        border: thick $accent;
+        padding: 1 2;
+    }
+    #preview-title {
+        text-style: bold;
+        color: $accent;
+    }
+    #preview-meta {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    #preview-body {
+        background: $background;
+        padding: 1;
+        height: 1fr;
+        border: round $primary;
+    }
     """
-).strip()
 
-TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_parlis",
-            "description": (
-                "Semantic search over the parliamentary-document corpus. "
-                "Embeds the query and returns the top-K most similar chunks "
-                "with source path, snippet, and distance."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": (
-                            "The search query. Phrase it the way the answer "
-                            "would appear in a document (declarative, "
-                            "specific). German queries work best for German "
-                            "documents."
-                        ),
-                    },
-                    "k": {
-                        "type": "integer",
-                        "description": (
-                            f"Top-K hits to return (default {DEFAULT_K}, "
-                            "max 20). Increase when you need more context, "
-                            "decrease for tighter relevance."
-                        ),
-                        "minimum": 1,
-                        "maximum": 20,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-]
+    def __init__(self, source: dict[str, Any]) -> None:
+        super().__init__()
+        self.source = source
 
-# ---------------------------------------------------------------------------
-# ANSI helpers (no rich dep, no fuss)
-# ---------------------------------------------------------------------------
-
-
-def _colour(text: str, code: str) -> str:
-    if not sys.stdout.isatty():
-        return text
-    return f"\x1b[{code}m{text}\x1b[0m"
-
-
-def dim(s: str) -> str:
-    return _colour(s, "2")
-
-
-def bold(s: str) -> str:
-    return _colour(s, "1")
-
-
-def cyan(s: str) -> str:
-    return _colour(s, "36")
-
-
-def green(s: str) -> str:
-    return _colour(s, "32")
-
-
-def yellow(s: str) -> str:
-    return _colour(s, "33")
-
-
-def red(s: str) -> str:
-    return _colour(s, "31")
-
-
-# ---------------------------------------------------------------------------
-# Clients
-# ---------------------------------------------------------------------------
-
-
-def make_vectors_client():
-    return boto3.client(
-        "s3vectors",
-        endpoint_url=MARILA_ENDPOINT,
-        region_name=MARILA_REGION,
-        aws_access_key_id=MARILA_ACCESS_KEY,
-        aws_secret_access_key=MARILA_SECRET,
-    )
-
-
-def make_ollama_client():
-    return ollama.Client(host=OLLAMA_HOST)
-
-
-# ---------------------------------------------------------------------------
-# Tool implementation
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ChatState:
-    """Mutable per-process state — model, verbosity, conversation log."""
-
-    chat_model: str = CHAT_MODEL
-    default_k: int = DEFAULT_K
-    verbose: bool = False
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    last_sources: list[dict[str, Any]] = field(default_factory=list)
-
-    def reset(self) -> None:
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        self.last_sources = []
-
-
-def search_parlis(
-    ollama_client: ollama.Client,
-    vectors_client: Any,
-    query: str,
-    k: int,
-) -> dict[str, Any]:
-    """Embed `query` via embeddinggemma, QueryVectors against marila, return hits."""
-    if not query.strip():
-        return {"error": "empty query", "results": []}
-    k = max(1, min(int(k), 20))
-
-    emb = ollama_client.embed(model=EMBED_MODEL, input=query)
-    # ollama-python returns either a pydantic `EmbedResponse` (current)
-    # or a plain dict (older). Normalise both to a flat list.
-    vec = None
-    embeddings = getattr(emb, "embeddings", None)
-    if embeddings is None and isinstance(emb, dict):
-        embeddings = emb.get("embeddings")
-    if embeddings:
-        vec = list(embeddings[0])
-    else:
-        legacy = getattr(emb, "embedding", None) if not isinstance(emb, dict) else emb.get("embedding")
-        if legacy:
-            vec = list(legacy)
-    if not vec:
-        return {"error": f"unexpected ollama embed response shape", "results": []}
-    qvec = vec
-
-    try:
-        resp = vectors_client.query_vectors(
-            vectorBucketName=BUCKET,
-            indexName=INDEX,
-            topK=k,
-            queryVector={"float32": qvec},
-            returnDistance=True,
-            returnMetadata=True,
-        )
-    except Exception as e:  # noqa: BLE001 — surface to model
-        return {"error": f"QueryVectors failed: {e}", "results": []}
-
-    hits = []
-    for v in resp.get("vectors", []):
-        meta = v.get("metadata") or {}
-        hits.append(
-            {
-                "source": meta.get("S3VECTORS-EMBED-SRC-LOCATION", v.get("key", "")),
-                "chunk_idx": meta.get("S3VECTORS-EMBED-CHUNK-IDX"),
-                "snippet": (meta.get("S3VECTORS-EMBED-SRC-CONTENT") or "")[:600],
-                "distance": v.get("distance"),
-            }
-        )
-    return {"query": query, "k": k, "results": hits}
-
-
-# ---------------------------------------------------------------------------
-# Agent loop
-# ---------------------------------------------------------------------------
-
-
-def run_turn(
-    state: ChatState,
-    ollama_client: ollama.Client,
-    vectors_client: Any,
-    user_text: str,
-) -> str:
-    state.messages.append({"role": "user", "content": user_text})
-    state.last_sources = []
-    final_text = ""
-
-    for hop in range(MAX_TOOL_HOPS):
-        if state.verbose:
-            print(dim(f"  [hop {hop + 1}/{MAX_TOOL_HOPS}] calling {state.chat_model}…"))
-        resp = ollama_client.chat(
-            model=state.chat_model,
-            messages=state.messages,
-            tools=TOOL_DEFINITIONS,
-        )
-        msg = getattr(resp, "message", None)
-        if msg is None and isinstance(resp, dict):
-            msg = resp.get("message")
-        if msg is None:
-            msg = {}
-        content = _get(msg, "content") or ""
-        # `thinking` is the chain-of-thought channel on reasoning-capable
-        # models (gpt-oss, granite4, …). Most of the time it's just
-        # internal and the user-facing answer goes in `content`; but
-        # gpt-oss in particular sometimes drops `content` after many
-        # tool round-trips and leaves the entire output in `thinking`.
-        # We capture it as a fallback below.
-        thinking = _get(msg, "thinking") or ""
-        tool_calls = _get(msg, "tool_calls") or []
-
-        if state.verbose:
-            print(
-                dim(
-                    f"  ← content={len(content)}ch  thinking={len(thinking)}ch  "
-                    f"tool_calls={len(tool_calls)}"
-                )
+    def compose(self) -> ComposeResult:
+        s = self.source
+        dist = s.get("distance")
+        dist_s = f"  cos-dist {dist:.4f}" if isinstance(dist, (int, float)) else ""
+        chunk = s.get("chunk_idx")
+        chunk_s = f"  chunk_idx {chunk}" if chunk is not None else ""
+        with Container(id="preview-box"):
+            yield Label(s.get("source", "?"), id="preview-title")
+            yield Label(f"{dist_s}{chunk_s}", id="preview-meta")
+            body = s.get("snippet") or "(no snippet in metadata)"
+            log = RichLog(id="preview-body", wrap=True, markup=False, highlight=False)
+            log.write(body)
+            yield log
+            yield Label(
+                "Esc / q to close",
+                classes="hint",
             )
 
-        # Persist the assistant turn (with whatever fields the model
-        # returned — Ollama-python returns Message objects that
-        # serialise cleanly under json.dumps).
-        state.messages.append(_message_to_dict(msg))
 
-        if not tool_calls:
-            if content.strip():
-                final_text = content
-            elif thinking.strip():
-                final_text = (
-                    "(model emitted no `content` channel on the final turn — "
-                    "falling back to its reasoning channel)\n\n"
-                    + thinking
-                )
-            else:
-                final_text = (
-                    "(model returned an empty response despite "
-                    f"{len(state.last_sources)} retrieved sources. "
-                    "Try `/reset` and rephrase, or `/model granite4:latest` / "
-                    "`/model mistral:latest` — both tend to be steadier on "
-                    "German + tool-use than gpt-oss.)"
-                )
-            break
+# ---------------------------------------------------------------------------
+# Main app
+# ---------------------------------------------------------------------------
 
-        for call in tool_calls:
-            fn = _get(call, "function") or {}
-            name = _get(fn, "name") or ""
-            args = _get(fn, "arguments") or {}
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    args = {}
-            args = dict(args or {})
 
-            if name == "search_parlis":
-                query = str(args.get("query") or "")
-                k = int(args.get("k") or state.default_k)
-                if state.verbose:
-                    print(dim(f"  ↪ search_parlis(query={query!r}, k={k})"))
-                result = search_parlis(ollama_client, vectors_client, query, k)
-                # Track sources for /sources command.
-                state.last_sources.extend(result.get("results", []))
-                state.messages.append(
-                    {
-                        "role": "tool",
-                        "name": "search_parlis",
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
+class ParlisChat(App[None]):
+    CSS = """
+    Screen {
+        layers: base modal;
+    }
+    #main {
+        layout: horizontal;
+        height: 1fr;
+    }
+    #chat-pane {
+        width: 2fr;
+        border: round $primary;
+    }
+    #side-pane {
+        width: 1fr;
+        layout: vertical;
+    }
+    #verbose-pane {
+        height: 1fr;
+        border: round $secondary;
+    }
+    #sources-pane {
+        height: 1fr;
+        border: round $secondary;
+    }
+    #sources-list {
+        height: 1fr;
+    }
+    Input {
+        dock: bottom;
+    }
+    .pane-title {
+        text-style: bold;
+        background: $secondary;
+        color: $text;
+        padding: 0 1;
+    }
+    .hint {
+        color: $text-muted;
+        text-style: italic;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "quit", "Quit"),
+        Binding("ctrl+r", "reset", "Reset chat"),
+        Binding("ctrl+l", "clear_chat", "Clear pane"),
+        Binding("ctrl+s", "focus_sources", "Focus sources"),
+        Binding("ctrl+b", "focus_input", "Focus input"),
+    ]
+
+    busy: reactive[bool] = reactive(False)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.state = ChatState()
+        self.state.reset()
+        self.oc = make_ollama_client()
+        self.vc = make_vectors_client()
+        self.history: list[str] = []      # user-input history for up/down
+        self.history_idx: int = 0         # current navigation position
+        self.input_draft: str = ""        # text typed before they hit up
+
+    # ----- layout -----
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Horizontal(id="main"):
+            with Vertical(id="chat-pane"):
+                yield Static("chat", classes="pane-title")
+                yield RichLog(
+                    id="chat-log", wrap=True, markup=True, highlight=False,
                 )
-                if state.verbose:
-                    for r in result.get("results", [])[:3]:
-                        print(
-                            dim(
-                                f"     • {r.get('source')} (d={r.get('distance'):.4f})"
-                                if isinstance(r.get("distance"), (int, float))
-                                else f"     • {r.get('source')}"
-                            )
-                        )
-            else:
-                state.messages.append(
-                    {
-                        "role": "tool",
-                        "name": name or "unknown",
-                        "content": json.dumps({"error": f"unknown tool {name!r}"}),
-                    }
-                )
-    else:
-        # Hit the tool-hop cap without the model writing a final answer.
-        # Rather than discard all the search results we accumulated,
-        # force a synthesis turn: one more chat() call with tools
-        # disabled, asking the model to commit to an answer based on
-        # what's already in its context window.
-        if state.verbose:
-            print(
-                dim(
-                    f"  [synthesis] tool budget exhausted — forcing one "
-                    f"no-tools call to commit to an answer over "
-                    f"{len(state.last_sources)} retrieved sources"
-                )
-            )
-        state.messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "You have exhausted your search budget. Produce the "
-                    "final answer NOW, based strictly on the search results "
-                    "already in your context. Cite source paths in brackets, "
-                    "e.g. `[17_1234_D.pdf]`. If the evidence is weak or the "
-                    "corpus did not contain a clear answer, say so plainly "
-                    "in 1-2 sentences — do not invent details and do not "
-                    "ask to search more."
-                ),
-            }
+            with Vertical(id="side-pane"):
+                with Vertical(id="verbose-pane"):
+                    yield Static("hops · agent verbose", classes="pane-title")
+                    yield RichLog(
+                        id="verbose-log",
+                        wrap=True,
+                        markup=True,
+                        highlight=False,
+                        max_lines=2000,
+                    )
+                with Vertical(id="sources-pane"):
+                    yield Static(
+                        "sources  (↑/↓ select · p preview)",
+                        classes="pane-title",
+                    )
+                    yield ListView(id="sources-list")
+        yield Input(
+            placeholder="ask a question (↑/↓ history · ctrl+r reset · ctrl+c quit)",
+            id="question",
         )
-        resp = ollama_client.chat(
-            model=state.chat_model,
-            messages=state.messages,
-            tools=[],  # critical: no more tool calls
+        yield Footer()
+
+    # ----- lifecycle -----
+
+    def on_mount(self) -> None:
+        self.title = "marila — agentic RAG chat"
+        self.sub_title = f"{BUCKET}/{INDEX}"
+        chat = self.query_one("#chat-log", RichLog)
+        chat.write(
+            f"[dim]embed: {EMBED_MODEL}   chat: {self.state.chat_model}   "
+            f"ollama: {OLLAMA_HOST}[/dim]"
         )
-        msg = getattr(resp, "message", None) or (
-            resp.get("message") if isinstance(resp, dict) else None
-        ) or {}
-        state.messages.append(_message_to_dict(msg))
-        content = _get(msg, "content") or ""
-        thinking = _get(msg, "thinking") or ""
-        if content.strip():
-            final_text = content
-        elif thinking.strip():
-            final_text = (
-                "(synthesis turn produced no `content` channel — falling "
-                "back to thinking)\n\n" + thinking
-            )
+        verbose = self.query_one("#verbose-log", RichLog)
+        verbose.write("[dim]waiting for first question…[/dim]")
+
+        # Preflight the index — fail fast with a banner instead of bad
+        # vibes when the user types their first question.
+        ok, msg = preflight_index(self.vc)
+        if ok:
+            chat.write(f"[green]✓ {msg}[/green]")
         else:
-            final_text = (
-                "(agent burned its tool budget AND the synthesis turn "
-                "produced an empty response — try `/reset` and a more "
-                "specific question, or `/model granite4:latest`)"
+            chat.write(
+                f"[red]✗ could not reach {BUCKET}/{INDEX}: {msg}[/red]\n"
+                f"[dim]Run `demo/index_parlis.sh` first or set BUCKET/INDEX.[/dim]"
             )
 
-    return final_text
+        self.query_one("#question", Input).focus()
 
+    # ----- key bindings -----
 
-def _get(obj: Any, attr: str, default: Any = None) -> Any:
-    """Attribute-or-key accessor — works for both pydantic models and dicts."""
-    if obj is None:
-        return default
-    if isinstance(obj, dict):
-        return obj.get(attr, default)
-    return getattr(obj, attr, default)
+    def action_reset(self) -> None:
+        self.state.reset()
+        self.query_one("#chat-log", RichLog).write(
+            "\n[dim italic]— conversation reset —[/dim italic]\n"
+        )
+        self.query_one("#verbose-log", RichLog).clear()
+        self.query_one("#sources-list", ListView).clear()
+        self.state.last_sources = []
+        self.history_idx = len(self.history)
 
+    def action_clear_chat(self) -> None:
+        self.query_one("#chat-log", RichLog).clear()
 
-def _message_to_dict(msg: Any) -> dict[str, Any]:
-    """Coerce an ollama Message (pydantic or dict) to a plain dict for
-    the message log we feed back into the next chat() call."""
-    if isinstance(msg, dict):
-        return {k: v for k, v in msg.items() if v is not None}
-    out: dict[str, Any] = {"role": _get(msg, "role") or "assistant"}
-    content = _get(msg, "content")
-    if content:
-        out["content"] = content
-    # Preserve `thinking` so the next chat() call sees the model's prior
-    # reasoning — important for keeping reasoning models coherent across
-    # multi-hop tool loops.
-    thinking = _get(msg, "thinking")
-    if thinking:
-        out["thinking"] = thinking
-    tcs = _get(msg, "tool_calls") or []
-    if tcs:
-        coerced = []
-        for tc in tcs:
-            fn = _get(tc, "function") or {}
-            coerced.append(
-                {
-                    "function": {
-                        "name": _get(fn, "name") or "",
-                        "arguments": _get(fn, "arguments") or {},
-                    }
-                }
-            )
-        out["tool_calls"] = coerced
-    return out
+    def action_focus_sources(self) -> None:
+        self.query_one("#sources-list", ListView).focus()
 
+    def action_focus_input(self) -> None:
+        self.query_one("#question", Input).focus()
 
-# ---------------------------------------------------------------------------
-# REPL
-# ---------------------------------------------------------------------------
+    # ----- input + history -----
 
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "question":
+            return
+        text = event.value.strip()
+        if not text:
+            return
+        if self.busy:
+            self._chat_note("[yellow]busy — wait for the current turn to finish[/yellow]")
+            return
+        event.input.value = ""
+        self.input_draft = ""
 
-def handle_slash(state: ChatState, line: str) -> bool:
-    """Handle `/cmd …`. Returns True if the command should exit the REPL."""
-    parts = line.strip().split(maxsplit=1)
-    cmd = parts[0]
-    arg = parts[1] if len(parts) > 1 else ""
-    if cmd in ("/quit", "/exit"):
-        return True
-    if cmd == "/reset":
-        state.reset()
-        print(dim("(conversation reset)"))
-    elif cmd == "/sources":
-        if not state.last_sources:
-            print(dim("(no sources from the last turn)"))
-        else:
-            for r in state.last_sources:
-                dist = r.get("distance")
-                dist_s = f" d={dist:.4f}" if isinstance(dist, (int, float)) else ""
-                snippet = (r.get("snippet") or "").replace("\n", " ")[:140]
-                print(f"  {cyan(str(r.get('source', '?')))}{dim(dist_s)}  {snippet}")
-    elif cmd == "/verbose":
-        state.verbose = not state.verbose
-        print(dim(f"(verbose = {state.verbose})"))
-    elif cmd == "/model":
-        if arg:
-            state.chat_model = arg.strip()
-            print(dim(f"(chat model = {state.chat_model})"))
-        else:
-            print(dim(f"current chat model: {state.chat_model}"))
-    elif cmd == "/k":
+        # Push into history (no dup of the previous one).
+        if not self.history or self.history[-1] != text:
+            self.history.append(text)
+        self.history_idx = len(self.history)
+
+        # Slash commands
+        if text.startswith("/"):
+            self._handle_slash(text)
+            return
+
+        self._chat_note(f"\n[bold green]you>[/bold green] {text}")
+        self.busy = True
+        self.handle_turn(text)
+
+    # ----- sources list -----
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # Selection alone doesn't trigger preview — the user has to press p.
+        # (Avoids opening a modal on every arrow key.)
+        pass
+
+    def _handle_list_p(self) -> None:
+        """Preview the highlighted source."""
+        lv = self.query_one("#sources-list", ListView)
+        idx = lv.index
+        if idx is None or idx < 0 or idx >= len(self.state.last_sources):
+            return
+        src = dict(self.state.last_sources[idx])  # copy
+        # Try to enrich via GetVectors so we get the full untruncated snippet.
+        key = src.get("key")
+        if key:
+            try:
+                richer = fetch_full_chunk(self.vc, key)
+                if richer and not richer.get("error"):
+                    # Keep distance from the search hit; everything else from the
+                    # full fetch is canonical.
+                    richer["distance"] = src.get("distance")
+                    src = richer
+            except Exception:  # noqa: BLE001
+                pass
+        self.push_screen(SourcePreview(src))
+
+    def _maybe_handle_sources_p(self, key: str) -> bool:
+        sources_list = self.query_one("#sources-list", ListView)
+        if self.focused is sources_list and key == "p":
+            self._handle_list_p()
+            return True
+        return False
+
+    # ----- agent worker -----
+
+    @work(thread=True, exclusive=True)
+    def handle_turn(self, question: str) -> None:
+        """Run the agent on a background thread; marshal events back via
+        post_message so widgets are touched only on the main loop."""
+
+        def emit(ev: AgentEvent) -> None:
+            self.post_message(AgentEventMessage(ev))
+
         try:
-            state.default_k = max(1, int(arg))
-            print(dim(f"(default k = {state.default_k})"))
-        except ValueError:
-            print(red("usage: /k <int>"))
-    elif cmd == "/help":
-        print(
-            dim(
-                "  /sources  show citations from the last answer\n"
-                "  /reset    wipe history\n"
-                "  /verbose  toggle showing tool calls\n"
-                "  /model X  switch chat model (must support tools)\n"
-                "  /k N      change default top-K for new searches\n"
-                "  /quit     exit"
-            )
+            answer = run_turn(self.state, self.oc, self.vc, question, on_event=emit)
+            self.post_message(AssistantAnswer(answer, list(self.state.last_sources)))
+        except Exception as e:  # noqa: BLE001
+            self.post_message(AgentError(str(e)))
+
+    # ----- message handlers -----
+
+    def on_agent_event_message(self, msg: AgentEventMessage) -> None:
+        v = self.query_one("#verbose-log", RichLog)
+        e = msg.event
+        ts = datetime.now().strftime("%H:%M:%S")
+        match e.kind:
+            case "hop":
+                v.write(
+                    f"[bold cyan]{ts}[/bold cyan] [bold]hop {e.data['n']}/{e.data['total']}[/bold] "
+                    f"[dim]{e.data['model']}[/dim]"
+                )
+            case "search":
+                q = e.data["query"]
+                k = e.data["k"]
+                v.write(f"  [yellow]↪ search[/yellow] [italic]{q!r}[/italic] k={k}")
+            case "results":
+                err = e.data.get("error")
+                if err:
+                    v.write(f"  [red]× search error: {err}[/red]")
+                else:
+                    n = e.data["hit_count"]
+                    td = e.data.get("top_distance")
+                    td_s = f" top d={td:.4f}" if isinstance(td, (int, float)) else ""
+                    v.write(f"  [green]← {n} hits[/green]{td_s}")
+            case "response":
+                v.write(
+                    f"  [dim]content={e.data['content_len']}ch  "
+                    f"thinking={e.data['thinking_len']}ch  "
+                    f"tools={e.data['tool_call_count']}[/dim]"
+                )
+            case "synthesis":
+                v.write(
+                    f"  [magenta]⚡ tool budget hit — synthesising over "
+                    f"{e.data['source_count']} sources[/magenta]"
+                )
+            case "final":
+                v.write(
+                    f"  [bold green]✓ final[/bold green] [dim]len={e.data['length']}  "
+                    f"sources={e.data['source_count']}[/dim]"
+                )
+            case "error":
+                v.write(f"  [red]× {e.data}[/red]")
+            case _:
+                v.write(f"  [dim]{e.kind} {e.data}[/dim]")
+
+    def on_assistant_answer(self, msg: AssistantAnswer) -> None:
+        self.busy = False
+        chat = self.query_one("#chat-log", RichLog)
+        chat.write("\n[bold magenta]assistant>[/bold magenta]")
+        chat.write(msg.text)
+        chat.write(f"[dim]  ({len(msg.sources)} sources)[/dim]")
+
+        # Repopulate the sources list.
+        lv = self.query_one("#sources-list", ListView)
+        lv.clear()
+        for s in msg.sources:
+            dist = s.get("distance")
+            dist_s = f"{dist:.4f}" if isinstance(dist, (int, float)) else "  ?  "
+            src = s.get("source", "?")
+            # Trim long paths so the right-pane stays readable
+            short = src.rsplit("/", 1)[-1] if "/" in src else src
+            lv.append(ListItem(Label(f"{dist_s}  {short}")))
+
+    def on_agent_error(self, msg: AgentError) -> None:
+        self.busy = False
+        self.query_one("#chat-log", RichLog).write(
+            f"\n[bold red]error:[/bold red] {msg.err}"
         )
-    else:
-        print(red(f"unknown command: {cmd} — try /help"))
-    return False
+
+    # ----- helpers -----
+
+    def _chat_note(self, line: str) -> None:
+        self.query_one("#chat-log", RichLog).write(line)
+
+    def _handle_slash(self, line: str) -> None:
+        parts = line.strip().split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+        match cmd:
+            case "/quit" | "/exit":
+                self.exit()
+            case "/reset":
+                self.action_reset()
+            case "/clear":
+                self.action_clear_chat()
+            case "/model":
+                if arg:
+                    self.state.chat_model = arg.strip()
+                    self._chat_note(
+                        f"[dim italic]chat model set to {self.state.chat_model}[/dim italic]"
+                    )
+                else:
+                    self._chat_note(
+                        f"[dim italic]current chat model: {self.state.chat_model}[/dim italic]"
+                    )
+            case "/k":
+                try:
+                    self.state.default_k = max(1, int(arg))
+                    self._chat_note(
+                        f"[dim italic]default k = {self.state.default_k}[/dim italic]"
+                    )
+                except ValueError:
+                    self._chat_note("[red]usage: /k <int>[/red]")
+            case "/help":
+                self._chat_note(
+                    "[dim]"
+                    "  /reset        clear conversation\n"
+                    "  /clear        clear the chat pane (history kept)\n"
+                    "  /model X      switch chat model (must support tools)\n"
+                    "  /k N          change default top-K\n"
+                    "  /quit         exit\n"
+                    "Keys: ↑/↓ history · ctrl+s focus sources · p preview · "
+                    "ctrl+r reset · ctrl+l clear · ctrl+c quit"
+                    "[/dim]"
+                )
+            case _:
+                self._chat_note(f"[red]unknown command {cmd} — /help for list[/red]")
+
+    # Catch 'p' globally so it works whenever the sources list is focused.
+    async def on_key(self, event) -> None:  # type: ignore[override]
+        # First: input-history nav.
+        try:
+            inp = self.query_one("#question", Input)
+        except Exception:  # noqa: BLE001
+            inp = None
+        if inp is not None and self.focused is inp:
+            if event.key == "up":
+                if not self.history:
+                    return
+                if self.history_idx == len(self.history):
+                    self.input_draft = inp.value
+                if self.history_idx > 0:
+                    self.history_idx -= 1
+                    inp.value = self.history[self.history_idx]
+                    inp.cursor_position = len(inp.value)
+                    event.prevent_default()
+                    event.stop()
+                return
+            if event.key == "down":
+                if not self.history:
+                    return
+                if self.history_idx < len(self.history) - 1:
+                    self.history_idx += 1
+                    inp.value = self.history[self.history_idx]
+                    inp.cursor_position = len(inp.value)
+                else:
+                    self.history_idx = len(self.history)
+                    inp.value = self.input_draft
+                    inp.cursor_position = len(inp.value)
+                event.prevent_default()
+                event.stop()
+                return
+        # Then: 'p' preview when sources list is focused.
+        if event.key == "p":
+            if self._maybe_handle_sources_p("p"):
+                event.prevent_default()
+                event.stop()
 
 
 def main() -> int:
-    print(bold("marila — agentic RAG chat") + dim(f"  ({BUCKET}/{INDEX})"))
-    print(
-        dim(
-            f"  embed: {EMBED_MODEL}   chat: {CHAT_MODEL}   ollama: {OLLAMA_HOST}\n"
-            f"  type a question, or /help. Ctrl-D to exit.\n"
-        )
-    )
-
-    ollama_client = make_ollama_client()
-    vectors_client = make_vectors_client()
-
-    # Pre-flight: confirm index exists. A hard fail here is much less
-    # confusing than a model that loops 8 times getting 404s.
-    try:
-        vectors_client.get_index(vectorBucketName=BUCKET, indexName=INDEX)
-    except Exception as e:  # noqa: BLE001
-        print(red(f"could not reach {BUCKET}/{INDEX}: {e}"))
-        print(
-            dim(
-                "  run `demo/index_parlis.sh` first, or set BUCKET/INDEX env to "
-                "an existing marila index."
-            )
-        )
-        return 2
-
-    state = ChatState()
-    state.reset()
-
-    while True:
-        try:
-            line = input(green("\nyou> "))
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not line.strip():
-            continue
-        if line.startswith("/"):
-            if handle_slash(state, line):
-                break
-            continue
-        try:
-            answer = run_turn(state, ollama_client, vectors_client, line)
-        except Exception as e:  # noqa: BLE001 — keep the REPL alive
-            print(red(f"error: {e}"))
-            continue
-        print()
-        print(bold("assistant>"))
-        print(answer)
-        if state.last_sources:
-            print(dim(f"  ({len(state.last_sources)} sources — type /sources to list)"))
-
+    ParlisChat().run()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

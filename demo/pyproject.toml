@@ -8,6 +8,7 @@ dependencies = [
     "botocore>=1.41",
     "openai>=2.0",       # embedding model for the OpenAI RAG demo
     "ollama>=0.4",       # chat + embeddings for the agentic parlis demo
+    "textual>=0.80",     # TUI front-end for parlis_chat
 ]
 
 # The demos are scripts, not an importable package. Tell setuptools so
