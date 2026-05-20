@@ -68,8 +68,10 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "embeddinggemma:latest")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-oss:latest")
 
 # Agent loop safety cap — pathological models can keep calling the tool
-# forever. Real production caps would be lower (e.g. 6).
-MAX_TOOL_HOPS = int(os.environ.get("MAX_TOOL_HOPS", "8"))
+# forever. 50 is generous: deep reasoning chains over the parlis corpus
+# can legitimately need many refinements. Override with the env var if
+# you want a tighter ceiling.
+MAX_TOOL_HOPS = int(os.environ.get("MAX_TOOL_HOPS", "50"))
 
 DEFAULT_K = int(os.environ.get("DEFAULT_K", "5"))
 
