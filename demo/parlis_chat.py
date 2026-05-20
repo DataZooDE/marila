@@ -290,7 +290,22 @@ def run_turn(
         if msg is None:
             msg = {}
         content = _get(msg, "content") or ""
+        # `thinking` is the chain-of-thought channel on reasoning-capable
+        # models (gpt-oss, granite4, …). Most of the time it's just
+        # internal and the user-facing answer goes in `content`; but
+        # gpt-oss in particular sometimes drops `content` after many
+        # tool round-trips and leaves the entire output in `thinking`.
+        # We capture it as a fallback below.
+        thinking = _get(msg, "thinking") or ""
         tool_calls = _get(msg, "tool_calls") or []
+
+        if state.verbose:
+            print(
+                dim(
+                    f"  ← content={len(content)}ch  thinking={len(thinking)}ch  "
+                    f"tool_calls={len(tool_calls)}"
+                )
+            )
 
         # Persist the assistant turn (with whatever fields the model
         # returned — Ollama-python returns Message objects that
@@ -298,7 +313,22 @@ def run_turn(
         state.messages.append(_message_to_dict(msg))
 
         if not tool_calls:
-            final_text = content
+            if content.strip():
+                final_text = content
+            elif thinking.strip():
+                final_text = (
+                    "(model emitted no `content` channel on the final turn — "
+                    "falling back to its reasoning channel)\n\n"
+                    + thinking
+                )
+            else:
+                final_text = (
+                    "(model returned an empty response despite "
+                    f"{len(state.last_sources)} retrieved sources. "
+                    "Try `/reset` and rephrase, or `/model granite4:latest` / "
+                    "`/model mistral:latest` — both tend to be steadier on "
+                    "German + tool-use than gpt-oss.)"
+                )
             break
 
         for call in tool_calls:
@@ -370,6 +400,12 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     content = _get(msg, "content")
     if content:
         out["content"] = content
+    # Preserve `thinking` so the next chat() call sees the model's prior
+    # reasoning — important for keeping reasoning models coherent across
+    # multi-hop tool loops.
+    thinking = _get(msg, "thinking")
+    if thinking:
+        out["thinking"] = thinking
     tcs = _get(msg, "tool_calls") or []
     if tcs:
         coerced = []
