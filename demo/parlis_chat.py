@@ -29,9 +29,12 @@ Env knobs (see `parlis_agent.py` for the full list):
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from typing import Any
+
+from rich.markdown import Markdown as RichMarkdown
+from rich.rule import Rule
+from rich.text import Text
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -155,7 +158,10 @@ class SourcePreview(ModalScreen[None]):
             yield Label(f"{dist_s}{chunk_s}", id="preview-meta")
             body = s.get("snippet") or "(no snippet in metadata)"
             log = RichLog(id="preview-body", wrap=True, markup=False, highlight=False)
-            log.write(body)
+            # Snippets are raw PDF-extracted plain text, not markdown —
+            # render as plain Text so we don't try to interpret stray
+            # asterisks or backticks as formatting.
+            log.write(Text(body))
             yield log
             yield Label(
                 "Esc / q to close",
@@ -439,8 +445,13 @@ class ParlisChat(App[None]):
         self.busy = False
         chat = self.query_one("#chat-log", RichLog)
         chat.write("\n[bold magenta]assistant>[/bold magenta]")
-        chat.write(msg.text)
+        # RichLog accepts any Rich renderable. Wrap the answer as
+        # Markdown so headings / lists / bold / code spans / tables /
+        # fenced code blocks render properly — the system prompt tells
+        # the model to emit GFM.
+        chat.write(RichMarkdown(msg.text))
         chat.write(f"[dim]  ({len(msg.sources)} sources)[/dim]")
+        chat.write(Rule(style="dim"))
 
         # Repopulate the sources list.
         lv = self.query_one("#sources-list", ListView)
