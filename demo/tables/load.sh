@@ -85,23 +85,23 @@ fi
 
 BUCKET_ARN="$(
     "$demo_python" - <<PY
-import os, sys
 import boto3
-endpoint = "$MARILA_ENDPOINT"
-region = "$MARILA_REGION"
+from botocore.exceptions import ClientError
 c = boto3.client(
     "s3tables",
-    endpoint_url=endpoint, region_name=region,
+    endpoint_url="$MARILA_ENDPOINT", region_name="$MARILA_REGION",
     aws_access_key_id="$AWS_ACCESS_KEY_ID",
     aws_secret_access_key="$AWS_SECRET_ACCESS_KEY",
 )
-# idempotent bucket
-try:
+# Check-then-create: Lakekeeper returns various non-Conflict shapes
+# (InternalServerException with a 'storage profile overlaps' body)
+# when the warehouse already exists, so we can't rely on a single
+# except clause. List + match by name is the only reliable path.
+existing = {b["name"]: b["arn"] for b in c.list_table_buckets()["tableBuckets"]}
+if "$BUCKET" in existing:
+    arn = existing["$BUCKET"]
+else:
     arn = c.create_table_bucket(name="$BUCKET")["arn"]
-except c.exceptions.ConflictException:
-    arn = next(
-        b["arn"] for b in c.list_table_buckets()["tableBuckets"] if b["name"] == "$BUCKET"
-    )
 print(arn, end="")
 PY
 )"
@@ -109,17 +109,23 @@ echo "    bucket arn = $BUCKET_ARN"
 
 "$demo_python" - <<PY
 import boto3
+from botocore.exceptions import ClientError
 c = boto3.client(
     "s3tables",
     endpoint_url="$MARILA_ENDPOINT", region_name="$MARILA_REGION",
     aws_access_key_id="$AWS_ACCESS_KEY_ID",
     aws_secret_access_key="$AWS_SECRET_ACCESS_KEY",
 )
-try:
+# Namespace: same check-then-create pattern.
+existing_ns = {
+    tuple(ns["namespace"])
+    for ns in c.list_namespaces(tableBucketARN="$BUCKET_ARN").get("namespaces", [])
+}
+if ("$NAMESPACE",) in existing_ns:
+    print("    namespace exists")
+else:
     c.create_namespace(tableBucketARN="$BUCKET_ARN", namespace=["$NAMESPACE"])
     print("    namespace created")
-except c.exceptions.ConflictException:
-    print("    namespace exists")
 # canonical TLC yellow-taxi schema
 schema = {"iceberg": {"schema": {"fields": [
     {"name": "vendorid", "type": "int"},
@@ -142,7 +148,13 @@ schema = {"iceberg": {"schema": {"fields": [
     {"name": "congestion_surcharge", "type": "double"},
     {"name": "airport_fee", "type": "double"},
 ]}}}
-try:
+existing_tables = {
+    t["name"]
+    for t in c.list_tables(tableBucketARN="$BUCKET_ARN", namespace="$NAMESPACE").get("tables", [])
+}
+if "$TABLE" in existing_tables:
+    print("    table exists")
+else:
     arn = c.create_table(
         tableBucketARN="$BUCKET_ARN",
         namespace="$NAMESPACE",
@@ -151,8 +163,6 @@ try:
         metadata=schema,
     )["tableARN"]
     print(f"    table created  arn = {arn}")
-except c.exceptions.ConflictException:
-    print("    table exists")
 PY
 
 # ----- per-month download + INSERT loop -----
@@ -191,28 +201,76 @@ for MONTH in "${MONTHS_ARRAY[@]}"; do
         echo "==> [$MONTH] cached $(du -h "$PARQUET" | cut -f1)"
     fi
 
-    # skip if already loaded
-    PARQUET_ROWS="$(duckdb -noheader -bail -c "SELECT count(*) FROM read_parquet('$PARQUET');" | tr -d '[:space:]')"
-    EXISTING_ROWS="$(duckdb -noheader -bail -c "$(duckdb_preamble) SELECT count(*) FROM lake.\"$NAMESPACE\".\"$TABLE\" WHERE date_trunc('month', tpep_pickup_datetime) = TIMESTAMP '${MONTH}-01 00:00:00';" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+    # Existing row count for this month — used to short-circuit the
+    # MERGE when there's nothing to do.
+    PARQUET_ROWS="$(duckdb -csv -bail -c "SELECT count(*) FROM read_parquet('$PARQUET');" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+    EXISTING_ROWS="$(duckdb -csv -bail -c "$(duckdb_preamble) SELECT count(*) FROM lake.\"$NAMESPACE\".\"$TABLE\" WHERE date_trunc('month', tpep_pickup_datetime) = TIMESTAMP '${MONTH}-01 00:00:00';" 2>/dev/null | tail -1 | tr -d '[:space:]' || echo 0)"
+    : "${EXISTING_ROWS:=0}"
     echo "    parquet rows = $PARQUET_ROWS, already in table = $EXISTING_ROWS"
-    if [[ "$EXISTING_ROWS" -ge "$PARQUET_ROWS" ]]; then
-        echo "    skip: month already loaded"
-        continue
-    fi
 
-    # bulk INSERT — read_parquet into lake.<ns>.<table> through /iceberg proxy
-    echo "==> [$MONTH] INSERT through marila /iceberg proxy …"
+    # MERGE INTO (DuckDB 1.5.3+, Iceberg V3) — upsert by row content
+    # hash. Any row already present (same hash) is skipped; net-new
+    # rows are inserted. Re-runs are no-ops.
+    echo "==> [$MONTH] MERGE through marila /iceberg proxy …"
     START=$(date +%s)
-    duckdb -bail -c "$(duckdb_preamble) INSERT INTO lake.\"$NAMESPACE\".\"$TABLE\" SELECT * FROM read_parquet('$PARQUET');"
+    # The row-hash key has to come from every payload column; we
+    # exclude no fields. Using DuckDB's row(*::*) → md5() so we don't
+    # depend on a server-side hash impl.
+    # SQL helper to assemble a row-hash from the same columns on both
+    # sides of the MERGE. concat_ws-of-casts is portable, doesn't need
+    # DuckDB's ROW(*) syntax (which doesn't unpack inside scalar fns).
+    row_hash() { local p="$1"; echo "md5(concat_ws('|',
+        cast(${p}vendorid as varchar),
+        cast(${p}tpep_pickup_datetime as varchar),
+        cast(${p}tpep_dropoff_datetime as varchar),
+        cast(${p}passenger_count as varchar),
+        cast(${p}trip_distance as varchar),
+        cast(${p}ratecodeid as varchar),
+        cast(${p}store_and_fwd_flag as varchar),
+        cast(${p}pulocationid as varchar),
+        cast(${p}dolocationid as varchar),
+        cast(${p}payment_type as varchar),
+        cast(${p}fare_amount as varchar),
+        cast(${p}extra as varchar),
+        cast(${p}mta_tax as varchar),
+        cast(${p}tip_amount as varchar),
+        cast(${p}tolls_amount as varchar),
+        cast(${p}improvement_surcharge as varchar),
+        cast(${p}total_amount as varchar),
+        cast(${p}congestion_surcharge as varchar),
+        cast(${p}airport_fee as varchar)))"; }
+    duckdb -bail -c "$(duckdb_preamble)
+MERGE INTO lake.\"$NAMESPACE\".\"$TABLE\" AS t
+USING (
+    SELECT *, $(row_hash "") AS _row_key
+      FROM read_parquet('$PARQUET')
+) AS s
+ON $(row_hash "t.") = s._row_key
+WHEN NOT MATCHED THEN INSERT (
+    vendorid, tpep_pickup_datetime, tpep_dropoff_datetime,
+    passenger_count, trip_distance, ratecodeid,
+    store_and_fwd_flag, pulocationid, dolocationid,
+    payment_type, fare_amount, extra, mta_tax,
+    tip_amount, tolls_amount, improvement_surcharge,
+    total_amount, congestion_surcharge, airport_fee
+) VALUES (
+    s.vendorid, s.tpep_pickup_datetime, s.tpep_dropoff_datetime,
+    s.passenger_count, s.trip_distance, s.ratecodeid,
+    s.store_and_fwd_flag, s.pulocationid, s.dolocationid,
+    s.payment_type, s.fare_amount, s.extra, s.mta_tax,
+    s.tip_amount, s.tolls_amount, s.improvement_surcharge,
+    s.total_amount, s.congestion_surcharge, s.airport_fee
+);
+" >/dev/null
     END=$(date +%s)
-    NEW_ROWS="$(duckdb -noheader -bail -c "$(duckdb_preamble) SELECT count(*) FROM lake.\"$NAMESPACE\".\"$TABLE\" WHERE date_trunc('month', tpep_pickup_datetime) = TIMESTAMP '${MONTH}-01 00:00:00';" | tr -d '[:space:]')"
-    echo "    OK — $NEW_ROWS rows now in $NAMESPACE.$TABLE for $MONTH  (took $((END - START))s)"
+    NEW_ROWS="$(duckdb -csv -bail -c "$(duckdb_preamble) SELECT count(*) FROM lake.\"$NAMESPACE\".\"$TABLE\" WHERE date_trunc('month', tpep_pickup_datetime) = TIMESTAMP '${MONTH}-01 00:00:00';" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+    echo "    OK — $NEW_ROWS rows in $NAMESPACE.$TABLE for $MONTH  (took $((END - START))s)"
 done
 
 # ----- summary -----
 echo
-echo "==> done.  Final tally:"
-duckdb -bail -c "$(duckdb_preamble) SELECT count(*) AS total_rows FROM lake.\"$NAMESPACE\".\"$TABLE\";"
+TOTAL="$(duckdb -csv -bail -c "$(duckdb_preamble) SELECT count(*) FROM lake.\"$NAMESPACE\".\"$TABLE\";" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+echo "==> done.  Total rows in $NAMESPACE.$TABLE: $TOTAL"
 echo
 echo "Run the TUI:"
-echo "  cd demo && .venv/bin/python -m tables.chat"
+echo "  cd demo && uv run python -m tables.chat"
