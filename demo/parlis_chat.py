@@ -208,6 +208,13 @@ class Splitter(Widget):
         self.remove_class("dragging")
         self.release_mouse()
 
+    def render(self) -> Text:
+        # Without an explicit render(), Widget falls back to repr-style
+        # output (`Splitter#vsplit.-vertical`) which then literally
+        # shows up inside the splitter. Render empty content; the
+        # background colour from CSS still paints.
+        return Text("")
+
 
 # ---------------------------------------------------------------------------
 # Source-preview modal
