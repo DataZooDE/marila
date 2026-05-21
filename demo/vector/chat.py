@@ -20,9 +20,9 @@ Layout (terminals ≥ 100 cols):
     └───────────────────────────────────────────────────────────────┘
 
 Run:
-    cd demo && uv run ./parlis_chat.py
+    cd demo && uv run python -m vector.chat
 
-Env knobs (see `parlis_agent.py` for the full list):
+Env knobs (see `vector/agent.py` for the full list):
     BUCKET=parlis  INDEX=drucksachen  CHAT_MODEL=gemma4:latest
     EMBED_MODEL=embeddinggemma:latest  MARILA_ENDPOINT=http://localhost:8080
 """
@@ -30,34 +30,33 @@ Env knobs (see `parlis_agent.py` for the full list):
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any
 
 from rich.markdown import Markdown as RichMarkdown
 from rich.rule import Rule
 from rich.text import Text
 
-from textual import events, work
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widget import Widget
 from textual.widgets import (
-    Button,
     Footer,
     Header,
     Input,
     Label,
     ListItem,
     ListView,
-    Markdown,
     RichLog,
     Static,
 )
 
-from parlis_agent import (
+from shared.tui_widgets import Splitter
+
+from vector.agent import (
     AgentEvent,
     BUCKET,
     CHAT_MODEL,
@@ -66,7 +65,6 @@ from parlis_agent import (
     INDEX,
     MARILA_ENDPOINT,
     OLLAMA_HOST,
-    ChatState,
     fetch_full_chunk,
     make_ollama_client,
     make_vectors_client,
@@ -102,118 +100,6 @@ class AgentError(Message):
     def __init__(self, err: str) -> None:
         super().__init__()
         self.err = err
-
-
-# ---------------------------------------------------------------------------
-# Draggable splitter widgets
-# ---------------------------------------------------------------------------
-
-
-class Splitter(Widget):
-    """A thin draggable bar between two sibling panes.
-
-    `orientation='vertical'` puts a 1-col-wide bar that resizes the
-    sibling to its left along the X axis (chat-pane vs side-pane).
-    `orientation='horizontal'` puts a 1-row-tall bar that resizes the
-    sibling above it along the Y axis (verbose-pane vs sources-pane).
-
-    The sibling identified by `target_id` carries the percentage size;
-    the other sibling is expected to be `1fr` so the remaining space
-    flows to it automatically. The percentage is also mirrored to a
-    reactive attribute on the App via `app_attr` so the F-key
-    bindings + the drag handler stay in sync.
-    """
-
-    DEFAULT_CSS = """
-    Splitter {
-        background: $primary 40%;
-    }
-    Splitter:hover {
-        background: $accent 60%;
-    }
-    Splitter.dragging {
-        background: $accent;
-    }
-    Splitter.-vertical {
-        width: 1;
-        height: 1fr;
-    }
-    Splitter.-horizontal {
-        width: 1fr;
-        height: 1;
-    }
-    """
-
-    def __init__(
-        self,
-        *,
-        orientation: Literal["vertical", "horizontal"],
-        target_id: str,
-        app_attr: str,
-        min_pct: int,
-        max_pct: int,
-        widget_id: str | None = None,
-    ) -> None:
-        super().__init__(id=widget_id)
-        self.orientation = orientation
-        self.target_id = target_id
-        self.app_attr = app_attr
-        self.min_pct = min_pct
-        self.max_pct = max_pct
-        self.add_class(f"-{orientation}")
-        self._drag_start_screen: int = 0
-        self._drag_start_target: int = 0
-        self._dragging: bool = False
-
-    def on_mouse_down(self, event: events.MouseDown) -> None:
-        target = self.app.query_one(f"#{self.target_id}")
-        if self.orientation == "vertical":
-            self._drag_start_screen = event.screen_x
-            self._drag_start_target = target.size.width
-        else:
-            self._drag_start_screen = event.screen_y
-            self._drag_start_target = target.size.height
-        self._dragging = True
-        self.add_class("dragging")
-        self.capture_mouse()
-
-    def on_mouse_move(self, event: events.MouseMove) -> None:
-        if not self._dragging:
-            return
-        # Convert the absolute pixel drag to a percentage of the
-        # parent container's relevant dimension, then clamp + write.
-        parent = self.parent
-        if parent is None:
-            return
-        if self.orientation == "vertical":
-            delta = event.screen_x - self._drag_start_screen
-            new_size = self._drag_start_target + delta
-            container = parent.size.width
-        else:
-            delta = event.screen_y - self._drag_start_screen
-            new_size = self._drag_start_target + delta
-            container = parent.size.height
-        if container <= 0:
-            return
-        new_pct = round(new_size * 100 / container)
-        new_pct = max(self.min_pct, min(self.max_pct, new_pct))
-        setattr(self.app, self.app_attr, new_pct)
-        # Only the App knows how to rewrite the styles + keep both
-        # axes in sync — defer to it.
-        if hasattr(self.app, "_apply_layout"):
-            self.app._apply_layout()  # type: ignore[attr-defined]
-
-    def on_mouse_up(self, event: events.MouseUp) -> None:
-        self._dragging = False
-        self.remove_class("dragging")
-        self.release_mouse()
-
-    def render(self) -> Text:
-        # Without an explicit render(), Widget falls back to repr-style
-        # output (`Splitter#vsplit.-vertical`) which then literally
-        # shows up inside the splitter. Render empty content; the
-        # background colour from CSS still paints.
-        return Text("")
 
 
 # ---------------------------------------------------------------------------

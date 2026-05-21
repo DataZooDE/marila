@@ -1,17 +1,20 @@
 [project]
 name = "marila-demo"
 version = "0.1.0"
-description = "boto3 demos that round-trip marila's AWS-JSON façades"
+description = "End-to-end demos for marila's S3-Vectors and S3-Tables / Iceberg surfaces"
 requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.41",       # ships the s3vectors + s3tables clients
     "botocore>=1.41",
-    "openai>=2.0",       # embedding model for the OpenAI RAG demo
-    "ollama>=0.4",       # chat + embeddings for the agentic parlis demo
-    "textual>=0.80",     # TUI front-end for parlis_chat
+    "openai>=2.0",       # embedding model for the OpenAI RAG demo (legacy/)
+    "ollama>=0.4",       # chat + embeddings for both TUI demos
+    "textual>=0.80",     # TUI front-end for vector/chat.py + tables/chat.py
+    "duckdb>=1.5.3",     # iceberg WRITE support for the tables demo
+    "pyarrow>=15",       # parquet reads in the taxi loader
 ]
 
-# The demos are scripts, not an importable package. Tell setuptools so
-# it doesn't try to auto-discover modules in the demo/ tree.
+# Make `python -m vector.chat` / `python -m tables.chat` work by
+# declaring each top-level subpackage. `shared` is the cross-demo
+# reusables module.
 [tool.setuptools]
-py-modules = []
+packages = ["vector", "tables", "shared"]

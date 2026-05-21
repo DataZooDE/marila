@@ -1,162 +1,147 @@
-# marila demos — realistic workflows
+# marila demos
 
-Three demos that satisfy the acceptance criteria in
-[`doc/REQUIREMENTS.md`](../doc/REQUIREMENTS.md) §9, designed to mirror
-the patterns AWS shows in its own blog posts rather than just proving
-the wire works:
+Two end-to-end TUI demos showcasing marila's two API surfaces, plus a
+`legacy/` folder with the earlier one-shot narrative scripts. Each TUI
+shares the same widget library (`shared/`) so the look and feel
+matches.
 
-- **[`demo_vectors.sh`](demo_vectors.sh)** — RAG over marila's own docs,
-  driven by the in-tree [`marila-embed`](../crates/embed_cli/) CLI.
-  Walks `README.md`, `CLAUDE.md`, and `doc/*.md`; markdown-aware
-  chunking; embeds via OpenAI's `text-embedding-3-small`; auto-creates
-  the index; then answers three natural-language questions (one
-  metadata-filtered) and renders the top-3 hits as a table.
-  - Pattern from the [S3 Vectors GA announcement][vectors-ga] (chunk
-    a PDF, embed, answer with citations).
-  - The earlier `demo_vectors.py` is preserved at the same path for now
-    in case you want to compare implementations; it is no longer part
-    of the §9 acceptance demos.
-- **[`demo_tables.py`](demo_tables.py)** — sales analytics. Loads a
-  deterministic 1,002-row synthetic CSV into an Iceberg table backed
-  by Lakekeeper, runs aggregate queries (top region by revenue, top
-  product by units, monthly trend), `DELETE`s the two intentionally-
-  bad rows, and `UPDATE`s a category rebrand (`widgets` → `accessories`).
-  - Pattern from [Transform your data to Amazon S3 Tables with
-    Amazon Athena][tables-athena] (insert real dataset → analytical
-    SQL → DELETE bad rows → UPDATE rebrand).
-- **[`lakekeeper_verify.sql`](lakekeeper_verify.sql)** — standalone
-  Iceberg-via-DuckDB smoke (3 rows, CREATE / INSERT / UPDATE / DELETE).
-  Useful for diagnosing the `/iceberg/v1/*` reverse-proxy without
-  needing Python.
-
-### Bonus: agentic RAG over a local PDF corpus
-
-- **[`index_parlis.sh`](index_parlis.sh) + [`parlis_chat.py`](parlis_chat.py)** —
-  point `PARLIS_DIR` at any local directory of PDFs (no path is baked
-  in), index them via `marila-embed put` with **local Ollama**
-  (`embeddinggemma:latest` for embeddings, default 768-d, free + private),
-  then chat with an agentic loop on top. With `--features
-  embedded-rustfs` (Option A above) the whole pipeline is zero-docker
-  + zero-cloud:
-
-  ```bash
-  # one terminal: marila with in-process RustFS
-  cargo run -p marila --features embedded-rustfs &
-
-  # one-time: index ~20k chunks under parlis/drucksachen
-  PARLIS_DIR=~/parlis/pdfs bash demo/index_parlis.sh
-
-  # then chat — the model decides when / how often to search
-  demo/.venv/bin/python demo/parlis_chat.py
-  ```
-
-  Marila's embedded RustFS volume lives at `./data/embedded-rustfs/`
-  by default so the index survives restarts (override via
-  `MARILA_EMBEDDED_RUSTFS_VOLUME`; empty string = ephemeral temp dir).
-
-  The chat model (default `gpt-oss:latest`) is given one tool,
-  `search_parlis(query, k)`, and an agentic prompt: refine its own
-  queries, search multiple times per turn, cite by source path. Inside
-  `parlis_chat.py` slash-commands `/sources` (last citations),
-  `/verbose` (show tool calls inline), `/reset`, `/model <name>`,
-  `/k <n>`, `/quit`. See the docstring for env-var knobs.
-
-[vectors-ga]: https://aws.amazon.com/blogs/aws/amazon-s3-vectors-now-generally-available-with-increased-scale-and-performance/
-[tables-athena]: https://aws.amazon.com/blogs/big-data/transform-your-data-to-amazon-s3-tables-with-amazon-athena/
-
-## Prerequisites
-
-Two ways to run marila — pick one:
-
-```bash
-# Option A — all-in-one (recommended for the parlis demo):
-# Marila boots with RustFS in-process. No docker needed.
-cargo run -p marila --features embedded-rustfs &
-
-# Option B — sidecar (needed for the tables-side demo since Lakekeeper
-# is in docker and wants to share S3 with marila):
-docker compose --profile lakekeeper up -d
-cargo build -p marila && ./target/debug/marila &
+```
+demo/
+├── shared/    Splitter widget + pivot-SQL builder reused by both TUIs
+├── vector/    agentic RAG over a local PDF corpus (s3-vectors surface)
+├── tables/    NYC Yellow Taxi pivot / slice-dice (s3-tables surface)
+└── legacy/    older one-shot scripts (sales_demo.py, rag_openai_demo.py, …)
 ```
 
-Then the Python deps for whichever demo you're running:
+## Setup (once)
 
 ```bash
 cd demo
 uv venv .venv
 uv pip install -e .
-
-# For demo_vectors.sh (OpenAI RAG):
-export OPENAI_API_KEY=sk-...
 ```
 
-## Running
+Both TUIs need a local Ollama. Models used:
+
+| Role | Default | Override |
+|---|---|---|
+| Chat (tool-calling) | `gemma4:latest` | `CHAT_MODEL=...` |
+| Embeddings (vector demo only) | `embeddinggemma:latest` | `EMBED_MODEL=...` |
+
+## 1. `vector/` — agentic RAG over a local PDF corpus
+
+Works against **either** marila variant:
+
+- `cargo run -p marila --features embedded-rustfs` — single binary, no docker
+- or `docker compose up -d rustfs && cargo run -p marila` — sidecar
+
+Index your corpus once (point `PARLIS_DIR` at any directory of PDFs —
+nothing is baked in):
 
 ```bash
-bash demo/demo_vectors.sh                      # RAG over marila docs (CLI)
-demo/.venv/bin/python demo/demo_tables.py      # sales analytics
-duckdb < demo/lakekeeper_verify.sql            # minimal SQL smoke
+PARLIS_DIR=~/parlis/pdfs MAX_CHUNKS=20000 bash demo/vector/index.sh
 ```
 
-Each is self-contained and cleans up on exit. The sales CSV is
-regenerated automatically if missing (`sales_seed.py`, deterministic
-with `random.seed(42)`).
+Then chat:
 
-## Sample output (truncated)
-
-`demo_vectors.py`:
-
-```
-Corpus: 217 chunks from 6 files
-Embedding 217 chunks via OpenAI text-embedding-3-small (~21319 tokens, ≈ $0.000426)
-Putting 217 vectors into marila-rag-…/rag-docs (dim=1536, metric=cosine)…
-ListVectors confirms 217 vectors stored.
-
-Q: How does marila validate vector dimensions on PutVectors?
-  1. d=0.4716  CLAUDE.md#chunk77  §## What's done
-  2. d=0.4733  CLAUDE.md#chunk37  §### C-2e — Data-plane wire shapes …
-  3. d=0.4874  CLAUDE.md#chunk34  §### C-2e — Data-plane wire shapes …
+```bash
+cd demo && uv run python -m vector.chat
 ```
 
-`demo_tables.py`:
+You get a three-pane TUI: chat / hops verbose / source list, with
+`p` to preview a source's full text in a modal, `F2`-`F4` to focus
+panes, `F6`-`F9` (or mouse-drag the splitters) to resize, `↑`/`↓` to
+walk through input history. See the chat module's docstring for env
+knobs (`BUCKET`, `INDEX`, `MARILA_ENDPOINT`, …).
+
+## 2. `tables/` — NYC Yellow Taxi pivot / slice-dice
+
+Requires the **full docker compose stack** (Lakekeeper + Postgres +
+RustFS) — embedded-RustFS won't work here because the Lakekeeper
+container can't reach the ephemeral 127.0.0.1 port that the embedded
+RustFS binds.
+
+```bash
+docker compose --profile lakekeeper up -d
+cargo run -p marila &                              # without --features
+```
+
+Load NYC Yellow Taxi (default: just 2024-01 ~ 3M rows, ~1 min;
+parquet is cached at `~/.cache/marila-taxi/`):
+
+```bash
+bash demo/tables/load.sh                           # default month
+TAXI_MONTHS=2024-01,2024-02,2024-03 \
+  bash demo/tables/load.sh                         # quarter, ~3 min
+```
+
+Then chat:
+
+```bash
+cd demo && uv run python -m tables.chat
+```
+
+You get a similar three-pane TUI: chat / hops verbose / **controls**.
+The controls pane is a small form (rows / cols / measure dropdowns +
+WHERE input). `F5` (or click `[F5] run`) runs the pivot **directly**
+through DuckDB without involving the LLM — same `build_pivot_sql`
+that the LLM's `pivot` tool calls, so the SQL is identical either way.
+The agent has three tools: `schema_lookup`, `pivot(rows, cols?,
+measure, where?)`, `run_sql(sql)` (read-only).
+
+Sample interactions:
 
 ```
-CreateTableBucket  marila-sales-…  (marila → Lakekeeper warehouse)
-CreateTable        orders  ARN = arn:aws:s3tables:…/table/…
-INSERT 1,002 rows from sales_seed.csv via marila's /iceberg proxy …
+you> trips per borough by day of week
+  → schema_lookup
+  → pivot(rows="day_of_week", cols="pickup_location_id", measure="trip_count")
+  → 7-row markdown table
 
-=== Analytics on the as-loaded data ===
-┌──────────┬─────────────┬────────┐
-│  region  │ revenue_usd │ orders │
-├──────────┼─────────────┼────────┤
-│ us-east  │     2103.45 │    258 │
-│ eu-west  │     1987.32 │    241 │
-│ ap-south │     1934.18 │    253 │
-│ us-west  │     1854.91 │    250 │
-└──────────┴─────────────┴────────┘
-…
-=== DELETE bad rows ===
-pre-cleanup bad-row count: 2
-post-cleanup row count:    1000
-
-=== UPDATE for category rebrand (widgets → accessories) ===
-before:  widgets=326, gadgets=316, tools=358
-after:   accessories=326, gadgets=316, tools=358
+you> /sql SELECT vendorid, count(*) FROM lake.nyc.yellow GROUP BY 1
+  → raw SQL escape hatch
 ```
+
+Slash commands: `/sql`, `/schema`, `/reset`, `/clear`, `/model`,
+`/help`, `/quit`. `p` on the verbose pane opens a modal with the full
+SQL + EXPLAIN of the latest query.
+
+## 3. `legacy/` — earlier one-shot narratives
+
+Kept verbatim for comparison; not the primary demos.
+
+- `legacy/rag_openai.sh` — RAG over marila's own docs via the
+  `marila-embed` CLI + OpenAI embeddings. Pattern from the
+  [S3 Vectors GA announcement][vectors-ga].
+- `legacy/rag_openai_demo.py` — the same workflow expressed inline
+  in Python (no CLI).
+- `legacy/sales_demo.py` — 1,002-row synthetic sales analytics:
+  `CREATE` / `INSERT` / `SELECT` / `DELETE` / `UPDATE` on an Iceberg
+  table via marila's `/iceberg` proxy. Pattern from
+  [Transform your data to S3 Tables with Athena][tables-athena].
+- `legacy/lakekeeper_verify.sql` — 3-row standalone DuckDB smoke for
+  the `/iceberg/v1/*` proxy, no Python needed.
+
+```bash
+demo/.venv/bin/python demo/legacy/sales_demo.py
+duckdb < demo/legacy/lakekeeper_verify.sql
+```
+
+[vectors-ga]: https://aws.amazon.com/blogs/aws/amazon-s3-vectors-now-generally-available-with-increased-scale-and-performance/
+[tables-athena]: https://aws.amazon.com/blogs/big-data/transform-your-data-to-amazon-s3-tables-with-amazon-athena/
 
 ## Gotchas (so you don't re-discover the discoveries)
 
-- The DuckDB demos set `ENDPOINT 'localhost:9000'` on the S3 secret
-  because they run from the host. Lakekeeper itself writes via the
-  docker-network alias `http://rustfs:9000` — same RustFS instance,
-  two valid hostnames. See `CLAUDE.md` C-6 and `doc/DISCOVERIES.md` D-2.
-- `ACCESS_DELEGATION_MODE 'none'` + `AUTHORIZATION_TYPE 'none'` on the
-  ATTACH are both required: the former so DuckDB uses our `TYPE s3`
-  secret for data writes (D-1), the latter so it doesn't try to fetch
-  an OAuth2 token from the catalog (Lakekeeper runs `allow-all` authz).
-- `DROP SCHEMA … CASCADE` isn't supported on Iceberg schemas yet — drop
-  tables individually first (D-5).
-- `demo_tables.py` deliberately calls `c.delete_table(...)` after
-  DuckDB's `DROP TABLE` and tolerates the resulting `NotFoundException`
-  — both ops remove the table; the boto3 call is the AWS-shape
-  confirmation, but the actual commit goes through Iceberg REST.
+- The DuckDB ATTACH always uses `ENDPOINT 'localhost:9000'` on the S3
+  secret because the demos run from the host. Lakekeeper-in-docker
+  itself writes via the docker-network alias `http://rustfs:9000` —
+  same RustFS instance, two valid hostnames. CLAUDE.md C-6 / D-2.
+- `ACCESS_DELEGATION_MODE 'none'` + `AUTHORIZATION_TYPE 'none'` on
+  the ATTACH are both required: the former so DuckDB uses our
+  `TYPE s3` secret for data writes (D-1), the latter so it doesn't
+  fetch OAuth2 from the catalog (Lakekeeper runs allow-all).
+- `DROP SCHEMA … CASCADE` isn't supported on Iceberg schemas yet —
+  drop tables individually first (D-5).
+- Iceberg WRITE through marila's proxy needs DuckDB ≥ **1.5.3** (the
+  loader probe checks). `iceberg_schema_properties`, `ALTER TABLE`,
+  `MERGE INTO` all became stable in that release —
+  see https://duckdb.org/2026/05/20/announcing-duckdb-153.
