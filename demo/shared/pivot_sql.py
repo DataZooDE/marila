@@ -221,12 +221,21 @@ def build_pivot_sql(
         ).replace("  ", " ").strip()
 
     cd = DIMENSIONS[cols]
+    # The inner SELECT must GROUP BY both dimensions, otherwise
+    # putting the aggregate measure (`COUNT(*)`, `AVG(fare_amount)`,
+    # etc.) alongside the un-aggregated row/col dims is a binder error:
+    #   "column X must appear in the GROUP BY clause or be part of an
+    #    aggregate function".
+    # After this pre-aggregation each (rows, cols) pair has exactly
+    # one row, so the outer PIVOT's `USING FIRST(measure)` just lifts
+    # that single value into the spread.
     return (
         f"PIVOT ("
         f"SELECT {rd.sql_expr} AS {rd.name}, "
         f"{cd.sql_expr} AS {cd.name}, "
         f"{md.sql_expr} AS {md.name} "
-        f"FROM {table} {where_clause}"
+        f"FROM {table} {where_clause} "
+        f"GROUP BY 1, 2"
         f") "
         f"ON {cd.name} "
         f"USING FIRST({md.name}) "
