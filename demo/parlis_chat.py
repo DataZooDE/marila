@@ -30,19 +30,20 @@ Env knobs (see `parlis_agent.py` for the full list):
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, Optional
 
 from rich.markdown import Markdown as RichMarkdown
 from rich.rule import Rule
 from rich.text import Text
 
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Footer,
@@ -101,6 +102,111 @@ class AgentError(Message):
     def __init__(self, err: str) -> None:
         super().__init__()
         self.err = err
+
+
+# ---------------------------------------------------------------------------
+# Draggable splitter widgets
+# ---------------------------------------------------------------------------
+
+
+class Splitter(Widget):
+    """A thin draggable bar between two sibling panes.
+
+    `orientation='vertical'` puts a 1-col-wide bar that resizes the
+    sibling to its left along the X axis (chat-pane vs side-pane).
+    `orientation='horizontal'` puts a 1-row-tall bar that resizes the
+    sibling above it along the Y axis (verbose-pane vs sources-pane).
+
+    The sibling identified by `target_id` carries the percentage size;
+    the other sibling is expected to be `1fr` so the remaining space
+    flows to it automatically. The percentage is also mirrored to a
+    reactive attribute on the App via `app_attr` so the F-key
+    bindings + the drag handler stay in sync.
+    """
+
+    DEFAULT_CSS = """
+    Splitter {
+        background: $primary 40%;
+    }
+    Splitter:hover {
+        background: $accent 60%;
+    }
+    Splitter.dragging {
+        background: $accent;
+    }
+    Splitter.-vertical {
+        width: 1;
+        height: 1fr;
+    }
+    Splitter.-horizontal {
+        width: 1fr;
+        height: 1;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        orientation: Literal["vertical", "horizontal"],
+        target_id: str,
+        app_attr: str,
+        min_pct: int,
+        max_pct: int,
+        widget_id: str | None = None,
+    ) -> None:
+        super().__init__(id=widget_id)
+        self.orientation = orientation
+        self.target_id = target_id
+        self.app_attr = app_attr
+        self.min_pct = min_pct
+        self.max_pct = max_pct
+        self.add_class(f"-{orientation}")
+        self._drag_start_screen: int = 0
+        self._drag_start_target: int = 0
+        self._dragging: bool = False
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        target = self.app.query_one(f"#{self.target_id}")
+        if self.orientation == "vertical":
+            self._drag_start_screen = event.screen_x
+            self._drag_start_target = target.size.width
+        else:
+            self._drag_start_screen = event.screen_y
+            self._drag_start_target = target.size.height
+        self._dragging = True
+        self.add_class("dragging")
+        self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self._dragging:
+            return
+        # Convert the absolute pixel drag to a percentage of the
+        # parent container's relevant dimension, then clamp + write.
+        parent = self.parent
+        if parent is None:
+            return
+        if self.orientation == "vertical":
+            delta = event.screen_x - self._drag_start_screen
+            new_size = self._drag_start_target + delta
+            container = parent.size.width
+        else:
+            delta = event.screen_y - self._drag_start_screen
+            new_size = self._drag_start_target + delta
+            container = parent.size.height
+        if container <= 0:
+            return
+        new_pct = round(new_size * 100 / container)
+        new_pct = max(self.min_pct, min(self.max_pct, new_pct))
+        setattr(self.app, self.app_attr, new_pct)
+        # Only the App knows how to rewrite the styles + keep both
+        # axes in sync — defer to it.
+        if hasattr(self.app, "_apply_layout"):
+            self.app._apply_layout()  # type: ignore[attr-defined]
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self._dragging = False
+        self.remove_class("dragging")
+        self.release_mouse()
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +301,7 @@ class ParlisChat(App[None]):
         border: round $primary;
     }
     #side-pane {
-        width: 34%;
+        width: 1fr;     /* fills whatever chat-pane + splitter leave */
         layout: vertical;
     }
     #verbose-pane {
@@ -203,7 +309,7 @@ class ParlisChat(App[None]):
         border: round $secondary;
     }
     #sources-pane {
-        height: 50%;
+        height: 1fr;    /* fills whatever verbose-pane + splitter leave */
         border: round $secondary;
     }
     #sources-list {
@@ -263,7 +369,10 @@ class ParlisChat(App[None]):
         yield Header(show_clock=True)
         with Horizontal(id="main"):
             with Vertical(id="chat-pane"):
-                yield Static("chat  (F3 focus · then ↑↓ / PgUp PgDn / wheel scroll)", classes="pane-title")
+                yield Static(
+                    "chat  (F3 focus · then ↑↓ / PgUp PgDn / wheel scroll)",
+                    classes="pane-title",
+                )
                 yield RichLog(
                     id="chat-log",
                     wrap=True,
@@ -271,6 +380,14 @@ class ParlisChat(App[None]):
                     highlight=False,
                     auto_scroll=True,
                 )
+            yield Splitter(
+                orientation="vertical",
+                target_id="chat-pane",
+                app_attr="chat_width_pct",
+                min_pct=self.CHAT_WIDTH_MIN,
+                max_pct=self.CHAT_WIDTH_MAX,
+                widget_id="vsplit",
+            )
             with Vertical(id="side-pane"):
                 with Vertical(id="verbose-pane"):
                     yield Static("hops · agent verbose", classes="pane-title")
@@ -282,6 +399,14 @@ class ParlisChat(App[None]):
                         max_lines=2000,
                         auto_scroll=True,
                     )
+                yield Splitter(
+                    orientation="horizontal",
+                    target_id="verbose-pane",
+                    app_attr="verbose_height_pct",
+                    min_pct=self.VERBOSE_HEIGHT_MIN,
+                    max_pct=self.VERBOSE_HEIGHT_MAX,
+                    widget_id="hsplit",
+                )
                 with Vertical(id="sources-pane"):
                     yield Static(
                         "sources  (F4 focus · ↑↓ select · p preview)",
@@ -289,7 +414,7 @@ class ParlisChat(App[None]):
                     )
                     yield ListView(id="sources-list")
         yield Input(
-            placeholder="ask (↑↓ history · F2/F3/F4 focus · F6-F9 resize · ctrl+r reset · ctrl+c quit)",
+            placeholder="ask (↑↓ history · F2/F3/F4 focus · F6-F9 or drag splitters to resize · ctrl+r reset · ctrl+c quit)",
             id="question",
         )
         yield Footer()
@@ -370,18 +495,20 @@ class ParlisChat(App[None]):
         self._apply_layout()
 
     def _apply_layout(self) -> None:
-        """Write current reactive sizes onto the mounted panes."""
+        """Write current reactive sizes onto the mounted panes.
+
+        Only the *target* panes (chat-pane, verbose-pane) get an explicit
+        percent. Their siblings (side-pane, sources-pane) are `1fr` in
+        CSS and auto-fill the rest, leaving room for the 1-cell splitter
+        between them.
+        """
         try:
             chat_pane = self.query_one("#chat-pane")
-            side_pane = self.query_one("#side-pane")
             verbose_pane = self.query_one("#verbose-pane")
-            sources_pane = self.query_one("#sources-pane")
         except Exception:  # noqa: BLE001 — pre-mount call
             return
         chat_pane.styles.width = f"{self.chat_width_pct}%"
-        side_pane.styles.width = f"{100 - self.chat_width_pct}%"
         verbose_pane.styles.height = f"{self.verbose_height_pct}%"
-        sources_pane.styles.height = f"{100 - self.verbose_height_pct}%"
 
     # ----- input + history -----
 
