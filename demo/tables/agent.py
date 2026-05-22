@@ -56,7 +56,21 @@ TABLE = os.environ.get("TABLE", "yellow")
 DUCKDB_S3_ENDPOINT = os.environ.get("DUCKDB_S3_ENDPOINT", "localhost:9000")
 
 OLLAMA_HOST = os.environ.get("OLLAMA_ENDPOINT", "http://localhost:11434")
-CHAT_MODEL = os.environ.get("CHAT_MODEL", "gemma4:latest")
+# CHAT_PROVIDER: "ollama" (default, local) / "openai" / "gemini".
+# When using openai/gemini, the relevant API key env var
+# (OPENAI_API_KEY / GEMINI_API_KEY) must be set. Both cloud paths
+# go through the `openai` SDK — Gemini exposes an OpenAI-compatible
+# endpoint at /v1beta/openai/.
+CHAT_PROVIDER = os.environ.get("CHAT_PROVIDER", "ollama").lower()
+# Per-provider default model; user can override with CHAT_MODEL or
+# /model in the TUI. Picks lean tool-use-capable defaults that don't
+# burn dollars on a chat-shaped probe.
+_DEFAULT_MODEL = {
+    "ollama": "gemma4:latest",
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-2.5-flash",
+}.get(CHAT_PROVIDER, "gemma4:latest")
+CHAT_MODEL = os.environ.get("CHAT_MODEL", _DEFAULT_MODEL)
 
 MAX_TOOL_HOPS = int(os.environ.get("MAX_TOOL_HOPS", "50"))
 DEFAULT_ROW_LIMIT = int(os.environ.get("DEFAULT_ROW_LIMIT", "200"))
@@ -263,8 +277,97 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 
-def make_ollama_client() -> ollama.Client:
-    return ollama.Client(host=OLLAMA_HOST)
+class _OllamaAdapter:
+    """Thin wrapper so `run_turn` can talk to the Ollama SDK and the
+    OpenAI SDK through the same `.chat(model=, messages=, tools=)`
+    surface, returning Ollama's `{"message": {...}}` envelope."""
+
+    def __init__(self, host: str) -> None:
+        self._c = ollama.Client(host=host)
+
+    def chat(self, *, model: str, messages: list, tools: list):
+        return self._c.chat(model=model, messages=messages, tools=tools)
+
+
+class _OpenAIAdapter:
+    """Wraps the `openai` SDK. Used for both the OpenAI API itself
+    and Gemini's OpenAI-compatible endpoint.
+
+    Tool-use protocol differences vs Ollama we normalize here:
+      - response shape: `.choices[0].message` → `{"message": {...}}`
+      - assistant `tool_calls`: each entry gets `{id, type, function}`;
+        we preserve `id` so the next-turn `tool` response can carry
+        `tool_call_id` (OpenAI strict-validates this).
+      - tool-call `arguments` come back as a JSON string; the agent
+        loop already detects str-args and json.loads them, so no
+        change there.
+    """
+
+    def __init__(self, *, api_key: str, base_url: Optional[str] = None) -> None:
+        from openai import OpenAI
+        self._c = OpenAI(api_key=api_key, **({"base_url": base_url} if base_url else {}))
+
+    def chat(self, *, model: str, messages: list, tools: list):
+        kwargs: dict[str, Any] = {"model": model, "messages": messages}
+        if tools:
+            kwargs["tools"] = tools
+        resp = self._c.chat.completions.create(**kwargs)
+        choice = resp.choices[0]
+        msg = choice.message
+        normalized_tool_calls = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,  # JSON string
+                },
+            }
+            for tc in (getattr(msg, "tool_calls", None) or [])
+        ]
+        return {
+            "message": {
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": normalized_tool_calls,
+            }
+        }
+
+
+def make_chat_client(provider: Optional[str] = None):
+    """Factory chosen by CHAT_PROVIDER (env), overridable per-call.
+    Raises a friendly error if the chosen provider needs an API key
+    that isn't set in the environment."""
+    p = (provider or CHAT_PROVIDER).lower()
+    if p == "ollama":
+        return _OllamaAdapter(host=OLLAMA_HOST)
+    if p == "openai":
+        key = os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "CHAT_PROVIDER=openai but OPENAI_API_KEY is not set."
+            )
+        return _OpenAIAdapter(api_key=key)
+    if p == "gemini":
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "CHAT_PROVIDER=gemini but GEMINI_API_KEY (or GOOGLE_API_KEY) is not set."
+            )
+        return _OpenAIAdapter(
+            api_key=key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+    raise ValueError(
+        f"unknown CHAT_PROVIDER={p!r} — expected one of: ollama, openai, gemini"
+    )
+
+
+# Back-compat: the TUI imports `make_ollama_client` by name. Keep the
+# name pointing at the generic factory so a CHAT_PROVIDER switch
+# Just Works without editing chat.py.
+def make_ollama_client():
+    return make_chat_client()
 
 
 def make_duckdb_connection() -> duckdb.DuckDBPyConnection:
@@ -576,14 +679,20 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         coerced = []
         for tc in tcs:
             fn = _get(tc, "function") or {}
-            coerced.append(
-                {
-                    "function": {
-                        "name": _get(fn, "name") or "",
-                        "arguments": _get(fn, "arguments") or {},
-                    }
+            entry: dict[str, Any] = {
+                "function": {
+                    "name": _get(fn, "name") or "",
+                    "arguments": _get(fn, "arguments") or {},
                 }
-            )
+            }
+            # Preserve `id` + `type` for OpenAI/Gemini — they
+            # strict-validate tool_call_id on the next-turn `tool`
+            # response. Ollama ignores extra fields.
+            tc_id = _get(tc, "id")
+            if tc_id:
+                entry["id"] = tc_id
+                entry["type"] = _get(tc, "type") or "function"
+            coerced.append(entry)
         out["tool_calls"] = coerced
     return out
 
@@ -648,7 +757,7 @@ def _result_to_tool_payload(r: QueryResult) -> str:
 
 def run_turn(
     state: TablesState,
-    ollama_client: ollama.Client,
+    ollama_client: Any,  # _OllamaAdapter | _OpenAIAdapter (duck-typed)
     duckdb_conn: duckdb.DuckDBPyConnection,
     user_text: str,
     *,
@@ -850,16 +959,23 @@ def run_turn(
                 except Exception:
                     args = {}
             args = dict(args or {})
+            # OpenAI/Gemini emit a `tool_calls[].id` that must be
+            # echoed as `tool_call_id` on the corresponding `tool`
+            # response message. Ollama ignores the field, so we
+            # always include it when present.
+            tc_id = _get(call, "id")
+
+            def _tool_msg(name: str, content: str) -> dict[str, Any]:
+                m: dict[str, Any] = {"role": "tool", "name": name, "content": content}
+                if tc_id:
+                    m["tool_call_id"] = tc_id
+                return m
 
             if name == "schema_lookup":
                 emit("schema")
                 schema = tool_schema_lookup(duckdb_conn)
                 state.messages.append(
-                    {
-                        "role": "tool",
-                        "name": "schema_lookup",
-                        "content": json.dumps(schema, ensure_ascii=False),
-                    }
+                    _tool_msg("schema_lookup", json.dumps(schema, ensure_ascii=False))
                 )
             elif name == "pivot":
                 rows = coerce_dim_list(args.get("rows"))
@@ -883,13 +999,7 @@ def run_turn(
                     elapsed_ms=round(r.elapsed_ms, 1),
                     error=r.error,
                 )
-                state.messages.append(
-                    {
-                        "role": "tool",
-                        "name": "pivot",
-                        "content": _result_to_tool_payload(r),
-                    }
-                )
+                state.messages.append(_tool_msg("pivot", _result_to_tool_payload(r)))
             elif name == "run_sql":
                 sql = str(args.get("sql") or "")
                 emit("sql", tool="run_sql", sql_preview=sql[:160])
@@ -902,21 +1012,11 @@ def run_turn(
                     elapsed_ms=round(r.elapsed_ms, 1),
                     error=r.error,
                 )
-                state.messages.append(
-                    {
-                        "role": "tool",
-                        "name": "run_sql",
-                        "content": _result_to_tool_payload(r),
-                    }
-                )
+                state.messages.append(_tool_msg("run_sql", _result_to_tool_payload(r)))
             else:
                 emit("error", phase="tool_dispatch", name=name)
                 state.messages.append(
-                    {
-                        "role": "tool",
-                        "name": name or "unknown",
-                        "content": json.dumps({"error": f"unknown tool {name!r}"}),
-                    }
+                    _tool_msg(name or "unknown", json.dumps({"error": f"unknown tool {name!r}"}))
                 )
     else:
         # Tool-budget exhausted — force synthesis with tools off.

@@ -21,12 +21,43 @@ uv venv .venv
 uv pip install -e .
 ```
 
-Both TUIs need a local Ollama. Models used:
+Both TUIs default to a local Ollama for chat + embeddings. The
+tables TUI can also drive **OpenAI** or **Gemini** via
+`CHAT_PROVIDER=openai|gemini` (see "Non-local chat models" below).
 
 | Role | Default | Override |
 |---|---|---|
-| Chat (tool-calling) | `gemma4:latest` | `CHAT_MODEL=...` |
+| Chat provider | `ollama` (local) | `CHAT_PROVIDER={ollama,openai,gemini}` |
+| Chat model | `gemma4:latest` (ollama) / `gpt-4o-mini` (openai) / `gemini-2.5-flash` (gemini) | `CHAT_MODEL=…` |
 | Embeddings (vector demo only) | `embeddinggemma:latest` | `EMBED_MODEL=...` |
+
+### Non-local chat models (tables TUI)
+
+The agent goes through a thin adapter so OpenAI / Gemini / Ollama
+all expose the same `chat(model, messages, tools)` surface. Pick by
+exporting `CHAT_PROVIDER` before launching the TUI:
+
+```bash
+# OpenAI (requires OPENAI_API_KEY)
+CHAT_PROVIDER=openai cd demo && uv run python -m tables.chat
+
+# Gemini (requires GEMINI_API_KEY; goes through Google's OpenAI-
+# compat endpoint at /v1beta/openai/)
+CHAT_PROVIDER=gemini cd demo && uv run python -m tables.chat
+
+# Override the default model for either provider:
+CHAT_PROVIDER=openai CHAT_MODEL=gpt-5-mini uv run python -m tables.chat
+CHAT_PROVIDER=gemini CHAT_MODEL=gemini-2.5-pro uv run python -m tables.chat
+```
+
+The TUI keybinds and slash commands behave identically across
+providers — `/model NEW_NAME` switches model mid-session within the
+current provider. To switch *provider* mid-session, restart with a
+different `CHAT_PROVIDER`.
+
+The vector TUI is still Ollama-only — it shares the embedding model
+with marila-embed and there's no OpenAI/Gemini embedding path wired
+in yet.
 
 ## 1. `vector/` — agentic RAG over a local PDF corpus
 
