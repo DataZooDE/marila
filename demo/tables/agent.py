@@ -171,9 +171,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "schema_lookup",
             "description": (
-                "Return the Iceberg table's column list (with DuckDB types), "
-                "available pivot dimensions, available pivot measures, and "
-                "the first 3 sample rows."
+                "Return the view's columns + pivot dimension/measure "
+                "names. Call AT MOST ONCE per question — the result "
+                "doesn't change between hops, calling it again is "
+                "wasted budget."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -479,37 +480,31 @@ def _execute(
 
 
 def tool_schema_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
-    raw_cols = con.execute(f"DESCRIBE {TABLE_REF}").fetchall()
+    """Compact schema summary for the LLM. Keep it small — large JSON
+    payloads cause smaller tool-use models (gemma4 in particular) to
+    drop the tool result from working memory and re-call this tool in
+    a loop. Empirically ~2KB stays inside the gemma4 attention window."""
     view_cols = con.execute(f"DESCRIBE {VIEW_REF}").fetchall()
-    zones_count = con.execute("SELECT count(*) FROM taxi_zones").fetchone()[0]
+    # Just `name: type` pairs — drop the dict-per-column overhead.
+    view_columns = {c[0]: c[1] for c in view_cols}
 
-    sample_cur = con.execute(f"SELECT * FROM {VIEW_REF} LIMIT 3")
-    sample_cols = [d[0] for d in sample_cur.description]
-    sample_rows = [dict(zip(sample_cols, r)) for r in sample_cur.fetchall()]
-    # JSON-encode any datetime/decimal so it round-trips cleanly.
-    def _sanitize(v: Any) -> Any:
-        try:
-            json.dumps(v)
-            return v
-        except TypeError:
-            return str(v)
-    sample_rows = [{k: _sanitize(v) for k, v in r.items()} for r in sample_rows]
+    # Dimensions: keep `name → description` only. The sql_expr column
+    # is irrelevant to the model (the view materializes every dim).
+    dim_descs = {d["name"]: d["description"] for d in list_dimensions()}
+    measure_descs = {m["name"]: m["description"] for m in list_measures()}
 
     return {
-        "view": VIEW_REF,
-        "view_columns": [{"name": c[0], "type": c[1]} for c in view_cols],
-        "raw_iceberg_table": TABLE_REF,
-        "raw_iceberg_columns": [{"name": c[0], "type": c[1]} for c in raw_cols],
-        "zone_lookup_rows": zones_count,
-        "dimensions": list_dimensions(),
-        "measures": list_measures(),
-        "sample_rows": sample_rows,
+        "view_to_query": VIEW_REF,
+        "view_columns": view_columns,
+        "dimension_names": list(dim_descs),
+        "dimensions_help": dim_descs,
+        "measure_names": list(measure_descs),
+        "measures_help": measure_descs,
         "notes": (
-            f"Use `{VIEW_REF}` for run_sql — every dimension name is a "
-            f"real column on this view. The raw Iceberg table "
-            f"`{TABLE_REF}` only has the canonical TLC columns. "
-            f"Borough/zone columns are NULL when the TLC zone lookup "
-            "isn't loaded (run `bash demo/tables/load.sh` to fetch it)."
+            f"Always query `{VIEW_REF}` from run_sql. Every dimension "
+            f"name is a real column on the view (already JOINed with "
+            f"the TLC zone lookup). Skip calling schema_lookup again — "
+            f"you have everything you need."
         ),
     }
 
@@ -629,6 +624,14 @@ def run_turn(
     state.messages.append({"role": "user", "content": user_text})
     final_text = ""
 
+    # Loop-breaker: if the model calls the same tool with the same
+    # arguments N times in a row, we treat that as "stuck" and force
+    # synthesis. Without this, gemma4 occasionally loops on
+    # schema_lookup until the hop budget is exhausted.
+    last_tool_signature: Optional[str] = None
+    repeat_count = 0
+    REPEAT_LIMIT = 2
+
     for hop in range(MAX_TOOL_HOPS):
         emit("hop", n=hop + 1, total=MAX_TOOL_HOPS, model=state.chat_model)
         try:
@@ -672,6 +675,62 @@ def run_turn(
                     "(model returned an empty response. Try `/reset` or "
                     "`/model granite4:latest`.)"
                 )
+            break
+
+        # Detect a tool-call loop: if every tool_call in this hop has
+        # the same (name, args) signature as the previous hop's, bump
+        # the repeat counter. After REPEAT_LIMIT consecutive identical
+        # hops, abort the loop and force synthesis.
+        sig_now = json.dumps(
+            sorted(
+                (
+                    _get(_get(c, "function") or {}, "name") or "",
+                    json.dumps(_get(_get(c, "function") or {}, "arguments") or {}, sort_keys=True, default=str),
+                )
+                for c in tool_calls
+            )
+        )
+        if sig_now == last_tool_signature:
+            repeat_count += 1
+        else:
+            repeat_count = 0
+            last_tool_signature = sig_now
+        if repeat_count >= REPEAT_LIMIT:
+            emit("error", phase="loop_break", repeats=repeat_count + 1, signature=sig_now[:120])
+            state.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"You have called the same tool with the same "
+                        f"arguments {repeat_count + 1} times in a row "
+                        f"without making progress. STOP calling tools. "
+                        f"Produce the final answer NOW using whatever "
+                        f"results you already have in your context. If "
+                        f"you have no data, say so plainly — do not "
+                        f"call another tool."
+                    ),
+                }
+            )
+            try:
+                resp = ollama_client.chat(
+                    model=state.chat_model, messages=state.messages, tools=[]
+                )
+            except Exception as e:  # noqa: BLE001
+                emit("error", phase="loop_break_synth", error=str(e))
+                return f"(loop-break synthesis error: {e})"
+            msg = (
+                getattr(resp, "message", None)
+                or (resp.get("message") if isinstance(resp, dict) else None)
+                or {}
+            )
+            state.messages.append(_message_to_dict(msg))
+            content = _get(msg, "content") or ""
+            thinking = _get(msg, "thinking") or ""
+            final_text = content.strip() or thinking.strip() or (
+                "(agent looped on a single tool and the loop-break "
+                "synthesis produced no answer either — try `/reset` "
+                "and rephrase, or `/model granite4:latest`.)"
+            )
             break
 
         for call in tool_calls:
