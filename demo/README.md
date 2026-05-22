@@ -82,10 +82,31 @@ cd demo && uv run python -m tables.chat
 ```
 
 You get a similar three-pane TUI: chat / hops verbose / **controls**.
-The controls pane is a small form (rows / cols / measure dropdowns +
-WHERE input). `F5` (or click `[F5] run`) runs the pivot **directly**
-through DuckDB without involving the LLM — same `build_pivot_sql`
-that the LLM's `pivot` tool calls, so the SQL is identical either way.
+
+The controls pane has three lists — **all dimensions**, **rows**, and
+**cols** — plus a measure dropdown and an optional WHERE input. Each
+turn the agent ran, the **chat pane also lists every query inline** with
+its SQL + a compact result preview, numbered `[1] [2] [3] …`; press the
+matching digit (with chat focused via `F3`) or `/show N` from the input
+to pop the full result in a modal.
+
+Pivot-controls keymap (focus the controls with `F4`):
+
+| Key | Where | Effect |
+|---|---|---|
+| `j` / `k` | any of the three lists | navigate ↓ / ↑ (vim) |
+| `r` | all-dims list | add highlighted dim to rows |
+| `c` | all-dims list | add highlighted dim to cols |
+| `d` or `del` | rows / cols list | remove highlighted dim |
+| `J` / `K` (shift) | rows / cols list | reorder ±1 (= change hierarchy depth) |
+| `F5` | anywhere | run the pivot |
+
+The order in the rows list IS the hierarchy depth, so position 1 is the
+outermost rollup level (e.g. day-of-week parent) and position 2 is the
+inner level (e.g. hour-of-day child). `F5` runs the pivot **directly**
+through DuckDB without involving the LLM — same `build_pivot_sql` that
+the LLM's `pivot` tool calls, so the SQL is identical either way.
+
 The agent has three tools: `schema_lookup`, `pivot(rows, cols?,
 measure, where?)`, `run_sql(sql)` (read-only).
 
@@ -101,9 +122,10 @@ you> /sql SELECT vendorid, count(*) FROM lake.nyc.yellow GROUP BY 1
   → raw SQL escape hatch
 ```
 
-Slash commands: `/sql`, `/schema`, `/reset`, `/clear`, `/model`,
-`/help`, `/quit`. `p` on the verbose pane opens a modal with the full
-SQL + EXPLAIN of the latest query.
+Slash commands: `/sql`, `/show N` (drill into the Nth query of the
+latest turn), `/schema`, `/reset`, `/clear`, `/model`, `/help`,
+`/quit`. `p` on the verbose pane opens a modal with the full SQL +
+EXPLAIN of the latest query.
 
 ## 3. `legacy/` — earlier one-shot narratives
 

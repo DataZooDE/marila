@@ -361,6 +361,10 @@ class TablesChat(App[None]):
         # the hierarchy depth.
         self.rows_order: list[str] = ["hour_of_day"]
         self.cols_order: list[str] = []
+        # Queries the agent ran during the latest turn, in run order.
+        # Digit shortcuts (1-9) and `/show N` open them in the
+        # detail modal so the user can drill into the SQL + data.
+        self.current_turn_queries: list[QueryResult] = []
 
     # ----- layout -----
 
@@ -608,13 +612,16 @@ class TablesChat(App[None]):
         def emit(ev: AgentEvent) -> None:
             self.post_message(AgentEventMessage(ev))
 
+        # Snapshot the queries-log length BEFORE the agent runs so we
+        # can hand the AssistantAnswer message the slice of queries
+        # actually produced by this turn (not the cumulative log).
+        before = len(self.state.last_queries)
         try:
             answer = run_turn(
                 self.state, self.oc, self.con, question, on_event=emit
             )
-            self.post_message(
-                AssistantAnswer(answer, list(self.state.last_queries))
-            )
+            per_turn = list(self.state.last_queries[before:])
+            self.post_message(AssistantAnswer(answer, per_turn))
         except Exception as e:  # noqa: BLE001
             self.post_message(AgentError(str(e)))
 
@@ -722,10 +729,51 @@ class TablesChat(App[None]):
 
     def on_assistant_answer(self, msg: AssistantAnswer) -> None:
         self.busy = False
+        self.current_turn_queries = list(msg.queries)
         chat = self.query_one("#chat-log", RichLog)
         chat.write("\n[bold magenta]assistant>[/bold magenta]")
         chat.write(RichMarkdown(msg.text))
-        chat.write(f"[dim]  ({len(msg.queries)} queries)[/dim]")
+
+        # Inline trace: every query the agent ran during this turn,
+        # numbered so a digit shortcut (focus chat with F3 → 1..9)
+        # or `/show N` can pop it in the detail modal.
+        if msg.queries:
+            chat.write(Rule(title=f"{len(msg.queries)} queries this turn", style="dim"))
+            for i, q in enumerate(msg.queries, start=1):
+                header = (
+                    f"[bold yellow][{i}][/bold yellow] "
+                    f"[dim]{q.elapsed_ms:>5.0f} ms · "
+                    f"{q.row_count} rows · "
+                    f"cols={len(q.columns)}[/dim]"
+                )
+                if q.row_dim_names:
+                    header += (
+                        f"  [dim]pivot rows=[{','.join(q.row_dim_names)}][/dim]"
+                    )
+                chat.write(header)
+                # SQL preview — full text, dimly-coloured so the
+                # tables that follow stay the focal point.
+                sql_lines = q.sql.split("\n") if q.sql else ["(no sql)"]
+                # Collapse leading/trailing whitespace per line for
+                # readability — the generator emits one-liners that
+                # `cat`-like terminals would wrap awkwardly.
+                for line in sql_lines[:8]:
+                    chat.write(f"  [dim italic cyan]{line.rstrip()}[/dim italic cyan]")
+                if len(sql_lines) > 8:
+                    chat.write(f"  [dim]… (+{len(sql_lines) - 8} more SQL lines)[/dim]")
+                # Result preview — compact (8 rows) here in the chat;
+                # the full result is one keypress away.
+                if q.error:
+                    chat.write(f"  [red]× {q.error}[/red]")
+                elif q.row_count == 0:
+                    chat.write("  [dim](no rows)[/dim]")
+                else:
+                    chat.write(_render_result_table(q, max_rows=8))
+            chat.write(
+                f"[dim]F3 to focus chat, then "
+                f"{', '.join(str(i) for i in range(1, min(10, len(msg.queries) + 1)))} "
+                f"opens the full result · or `/show N` from input[/dim]"
+            )
         chat.write(Rule(style="dim"))
 
     def on_direct_pivot_result(self, msg: DirectPivotResult) -> None:
@@ -779,6 +827,20 @@ class TablesChat(App[None]):
                 )
                 self.busy = True
                 self._run_raw_sql_threaded(arg)
+            case "/show":
+                if not arg.strip().isdigit():
+                    self._chat_note(
+                        f"[red]usage: /show N  (N = 1..{len(self.current_turn_queries) or 0})[/red]"
+                    )
+                    return
+                idx = int(arg.strip()) - 1
+                if 0 <= idx < len(self.current_turn_queries):
+                    self.push_screen(QueryDetail(self.current_turn_queries[idx]))
+                else:
+                    self._chat_note(
+                        f"[red]no query #{idx + 1} — this turn ran "
+                        f"{len(self.current_turn_queries)} queries[/red]"
+                    )
             case "/schema":
                 from tables.agent import tool_schema_lookup
                 try:
@@ -880,6 +942,20 @@ class TablesChat(App[None]):
                 self.push_screen(QueryDetail(self.state.last_queries[-1]))
                 event.prevent_default()
                 event.stop()
+                return
+
+        # ----- digit shortcut on focused chat → drill into a per-turn query -----
+        if event.key in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+            try:
+                chat = self.query_one("#chat-log", RichLog)
+            except Exception:  # noqa: BLE001
+                chat = None
+            if chat is not None and self.focused is chat:
+                idx = int(event.key) - 1
+                if 0 <= idx < len(self.current_turn_queries):
+                    self.push_screen(QueryDetail(self.current_turn_queries[idx]))
+                    event.prevent_default()
+                    event.stop()
 
     def _handle_controls_key(self, lv: ListView, lv_id: str, event) -> bool:
         """Returns True if the key was consumed."""
