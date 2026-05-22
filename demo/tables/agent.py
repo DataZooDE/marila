@@ -70,7 +70,7 @@ CHAT_PROVIDER = os.environ.get("CHAT_PROVIDER", "ollama").lower()
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "ollama": "gemma4:latest",
     "openai": "gpt-4o-mini",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.5-flash",
 }
 CHAT_MODEL = os.environ.get(
     "CHAT_MODEL", PROVIDER_DEFAULT_MODELS.get(CHAT_PROVIDER, "gemma4:latest")

@@ -28,7 +28,7 @@ tables TUI can also drive **OpenAI** or **Gemini** via
 | Role | Default | Override |
 |---|---|---|
 | Chat provider | `ollama` (local) | `CHAT_PROVIDER={ollama,openai,gemini}` |
-| Chat model | `gemma4:latest` (ollama) / `gpt-4o-mini` (openai) / `gemini-2.5-flash` (gemini) | `CHAT_MODEL=…` |
+| Chat model | `gemma4:latest` (ollama) / `gpt-4o-mini` (openai) / `gemini-3.5-flash` (gemini) | `CHAT_MODEL=…` |
 | Embeddings (vector demo only) | `embeddinggemma:latest` | `EMBED_MODEL=...` |
 
 ### Non-local chat models (tables TUI)
