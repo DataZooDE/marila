@@ -299,12 +299,16 @@ class _OpenAIAdapter:
 
     Tool-use protocol differences vs Ollama we normalize here:
       - response shape: `.choices[0].message` → `{"message": {...}}`
-      - assistant `tool_calls`: each entry gets `{id, type, function}`;
-        we preserve `id` so the next-turn `tool` response can carry
-        `tool_call_id` (OpenAI strict-validates this).
+      - we read the raw HTTP body (not the typed Pydantic model) so
+        provider-specific extras on tool_calls survive the round-trip.
+        Gemini 3.x in particular tags every tool_call with a
+        `thought_signature` and rejects the NEXT turn with HTTP 400
+        ("Function call is missing a thought_signature in
+        functionCall parts") if we don't echo it back. The openai
+        SDK's Pydantic models silently drop fields not in OpenAI's
+        own spec, hence the raw-JSON path.
       - tool-call `arguments` come back as a JSON string; the agent
-        loop already detects str-args and json.loads them, so no
-        change there.
+        loop already detects str-args and json.loads them.
     """
 
     def __init__(self, *, api_key: str, base_url: Optional[str] = None) -> None:
@@ -315,25 +319,18 @@ class _OpenAIAdapter:
         kwargs: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
-        resp = self._c.chat.completions.create(**kwargs)
-        choice = resp.choices[0]
-        msg = choice.message
-        normalized_tool_calls = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,  # JSON string
-                },
-            }
-            for tc in (getattr(msg, "tool_calls", None) or [])
-        ]
+        raw = self._c.chat.completions.with_raw_response.create(**kwargs)
+        data = json.loads(raw.text)
+        # data["choices"][0]["message"] is a raw dict — preserves ALL
+        # fields the provider returned, including thought_signature on
+        # each tool_call. We pass tool_calls through verbatim so the
+        # next-turn echo round-trips them.
+        msg = data["choices"][0]["message"]
         return {
             "message": {
                 "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": normalized_tool_calls,
+                "content": msg.get("content") or "",
+                "tool_calls": msg.get("tool_calls") or [],
             }
         }
 
@@ -670,6 +667,9 @@ def _get(obj: Any, attr: str, default: Any = None) -> Any:
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
     if isinstance(msg, dict):
+        # Dict-shaped messages (from the OpenAI adapter's raw-JSON
+        # path) already carry every provider-specific field —
+        # thought_signature, refusals, etc. Pass through verbatim.
         return {k: v for k, v in msg.items() if v is not None}
     out: dict[str, Any] = {"role": _get(msg, "role") or "assistant"}
     content = _get(msg, "content")
@@ -682,6 +682,11 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     if tcs:
         coerced = []
         for tc in tcs:
+            if isinstance(tc, dict):
+                # Already a dict — preserve every field (including
+                # thought_signature for Gemini 3.x).
+                coerced.append(dict(tc))
+                continue
             fn = _get(tc, "function") or {}
             entry: dict[str, Any] = {
                 "function": {
@@ -696,6 +701,12 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
             if tc_id:
                 entry["id"] = tc_id
                 entry["type"] = _get(tc, "type") or "function"
+            # Provider-specific extras to pass through on the
+            # attribute-access path (Ollama-style models).
+            for extra in ("thought_signature",):
+                v = _get(tc, extra)
+                if v is not None:
+                    entry[extra] = v
             coerced.append(entry)
         out["tool_calls"] = coerced
     return out
