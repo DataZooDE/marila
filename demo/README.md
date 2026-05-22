@@ -66,13 +66,16 @@ docker compose --profile lakekeeper up -d
 cargo run -p marila &                              # without --features
 ```
 
-Load NYC Yellow Taxi (default: just 2024-01 ~ 3M rows, ~1 min;
-parquet is cached at `~/.cache/marila-taxi/`):
+Load NYC Yellow Taxi (default: Q1 2024 ~9M rows, ~3 min;
+parquet is cached at `~/.cache/marila-taxi/`). The loader also caches
+TLC's tiny zone-lookup CSV in the same dir — the agent reads it to
+materialize `pickup_borough` / `dropoff_borough` etc. as real columns:
 
 ```bash
-bash demo/tables/load.sh                           # default month
-TAXI_MONTHS=2024-01,2024-02,2024-03 \
-  bash demo/tables/load.sh                         # quarter, ~3 min
+bash demo/tables/load.sh                           # default: Q1 2024
+TAXI_MONTHS=2024-01 bash demo/tables/load.sh       # single month, ~1 min
+TAXI_MONTHS=2024-01,2024-02,2024-03,2024-04,2024-05,2024-06 \
+  bash demo/tables/load.sh                         # full H1, ~10 min
 ```
 
 Then chat:
@@ -109,6 +112,16 @@ the LLM's `pivot` tool calls, so the SQL is identical either way.
 
 The agent has three tools: `schema_lookup`, `pivot(rows, cols?,
 measure, where?)`, `run_sql(sql)` (read-only).
+
+The agent's DuckDB session always exposes a view called **`taxi`**
+that materializes every pivot dimension as a real column AND
+LEFT-JOINs the TLC zone lookup. So `run_sql` queries against `taxi`
+can reference `day_of_week`, `hour_of_day`, `pickup_borough`,
+`pickup_zone`, `dropoff_borough`, `dropoff_zone`, `payment_method`,
+`passenger_bucket`, `trip_distance_bucket` directly — no need to
+hand-write `dayname(tpep_pickup_datetime)` or the zone JOIN. The
+raw Iceberg table `lake.nyc.yellow` is also accessible for cases
+that need the un-enriched columns.
 
 Sample interactions:
 

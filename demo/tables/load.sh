@@ -26,9 +26,10 @@
 #   DUCKDB_S3_ENDPOINT  S3 endpoint DuckDB talks to  (localhost:9000)
 #
 # Examples:
-#   bash demo/tables/load.sh                     # default: 2024-01
-#   TAXI_MONTHS=2024-01,2024-02,2024-03 \\
-#     bash demo/tables/load.sh                   # full Q1 ~9M rows
+#   bash demo/tables/load.sh                     # default: Q1 2024 ~9M rows
+#   TAXI_MONTHS=2024-01 bash demo/tables/load.sh # single month, ~1 min
+#   TAXI_MONTHS=2024-01,2024-02,2024-03,2024-04,2024-05,2024-06 \\
+#     bash demo/tables/load.sh                   # full H1 ~20M rows
 
 set -euo pipefail
 
@@ -36,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # ----- env -----
-TAXI_MONTHS="${TAXI_MONTHS:-2024-01}"
+TAXI_MONTHS="${TAXI_MONTHS:-2024-01,2024-02,2024-03}"
 BUCKET="${BUCKET:-taxi}"
 NAMESPACE="${NAMESPACE:-nyc}"
 TABLE="${TABLE:-yellow}"
@@ -48,6 +49,22 @@ export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-marila}"
 export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-marilasecret}"
 
 mkdir -p "$CACHE_DIR"
+
+# ----- TLC zone lookup (cached) -----
+# Tiny static lookup (~265 rows) — locationid → borough + zone name.
+# The agent's DuckDB session reads this directly and LEFT JOINs it
+# onto the fact table via the `taxi` view, so pickup_borough /
+# dropoff_borough / pickup_zone / dropoff_zone become real columns.
+ZONES_CSV="$CACHE_DIR/taxi_zone_lookup.csv"
+ZONES_URL="https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
+if [[ ! -f "$ZONES_CSV" ]]; then
+    echo "==> downloading TLC zone lookup …"
+    curl -fsSL --retry 3 -o "$ZONES_CSV.tmp" "$ZONES_URL"
+    mv "$ZONES_CSV.tmp" "$ZONES_CSV"
+    echo "    saved $(wc -l < "$ZONES_CSV") rows to $ZONES_CSV"
+else
+    echo "==> cached TLC zone lookup ($(wc -l < "$ZONES_CSV") rows)"
+fi
 
 # ----- sanity checks -----
 if ! command -v duckdb >/dev/null 2>&1; then

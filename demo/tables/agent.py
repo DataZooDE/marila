@@ -61,24 +61,62 @@ CHAT_MODEL = os.environ.get("CHAT_MODEL", "gemma4:latest")
 MAX_TOOL_HOPS = int(os.environ.get("MAX_TOOL_HOPS", "50"))
 DEFAULT_ROW_LIMIT = int(os.environ.get("DEFAULT_ROW_LIMIT", "200"))
 
+# Underlying Iceberg table — single source of truth, written by the loader.
 TABLE_REF = f'lake."{NAMESPACE}"."{TABLE}"'
+
+# Session-local DuckDB view that the agent + pivot tool actually query.
+# Materializes derived dimensions (hour_of_day, day_of_week, …) and
+# LEFT-JOINs the TLC zone lookup so pickup_borough / pickup_zone /
+# dropoff_borough / dropoff_zone are real columns. Without this view
+# the model often hallucinates `SELECT day_of_week FROM lake.nyc.yellow`
+# and gets a Binder Error — those names only exist as pivot-builder
+# aliases, not as Iceberg columns.
+VIEW_REF = "taxi"
+
+# Where to find the zone lookup. load.sh downloads it from TLC into
+# the cache dir. The agent reads it directly so the view can JOIN.
+CACHE_DIR = os.environ.get(
+    "CACHE_DIR",
+    os.path.join(
+        os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+        "marila-taxi",
+    ),
+)
+TAXI_ZONES_CSV = os.environ.get(
+    "TAXI_ZONES_CSV", os.path.join(CACHE_DIR, "taxi_zone_lookup.csv")
+)
 
 
 SYSTEM_PROMPT = textwrap.dedent(
     f"""\
-    You are a SQL analyst for an Iceberg table of NYC Yellow Taxi
-    trips. The table is `{TABLE_REF}` (DuckDB-attached via marila's
-    Iceberg REST proxy). Answer the user's question by calling tools.
+    You are a SQL analyst for NYC Yellow Taxi trips, stored in Iceberg
+    (DuckDB-attached via marila's `/iceberg/v1/*` proxy).
+
+    # Two ways to reference the data
+      - `{VIEW_REF}` — a DuckDB view that **already** materializes
+        every pivot dimension (`hour_of_day`, `day_of_week`,
+        `pickup_date`, `pickup_month`, `payment_method`,
+        `passenger_bucket`, `trip_distance_bucket`) AND LEFT-JOINs
+        the TLC zone lookup (`pickup_borough`, `pickup_zone`,
+        `dropoff_borough`, `dropoff_zone`). **Use `{VIEW_REF}` for
+        `run_sql`** — every column shown in `dimensions` is a real
+        column of this view.
+      - `{TABLE_REF}` — the raw Iceberg table. Only the canonical TLC
+        columns (`tpep_pickup_datetime`, `pulocationid`, etc.). Use
+        this only if you need the raw, un-enriched representation.
 
     # Tools
-      - `schema_lookup()` — call FIRST to see columns, types, dimensions,
-        and measures available for `pivot`. Returns small sample rows.
+      - `schema_lookup()` — call FIRST. Returns the view's columns +
+        types, the raw Iceberg table's columns + types, the pivot
+        dimensions/measures, and 3 sample rows.
       - `pivot(rows, cols?, measure, where?)` — preferred path. Pass
         dimension + measure *names* (e.g. `rows="hour_of_day"`,
-        `measure="trip_count"`). The system assembles the SQL.
-      - `run_sql(sql)` — raw SQL escape hatch. Use for filters / windows
-        / joins that the pivot tool can't express. Read-only;
-        `INSERT`/`UPDATE`/`DELETE` are rejected.
+        `measure="trip_count"`). The system assembles the SQL using
+        `{VIEW_REF}`.
+      - `run_sql(sql)` — raw SQL escape hatch. Use for filters /
+        windows / joins / window functions the pivot tool can't
+        express. **Query `{VIEW_REF}`** so dimension columns resolve.
+        Read-only; `INSERT`/`UPDATE`/`DELETE` are rejected.
 
     # Search rules
       - Always call `schema_lookup` first on a new question.
@@ -211,7 +249,9 @@ def make_ollama_client() -> ollama.Client:
 def make_duckdb_connection() -> duckdb.DuckDBPyConnection:
     """Open an in-memory DuckDB, install + load iceberg, configure the
     S3 secret pointing at marila's RustFS, and ATTACH the Iceberg
-    catalog. Reused for every tool call in a session."""
+    catalog. Also creates the session-local `taxi` view that materializes
+    derived dims + JOINs the TLC zone lookup, plus a `taxi_zones`
+    helper table. Reused for every tool call in a session."""
     con = duckdb.connect(":memory:")
     con.execute("INSTALL iceberg; LOAD iceberg;")
     con.execute(
@@ -233,6 +273,72 @@ def make_duckdb_connection() -> duckdb.DuckDBPyConnection:
             AUTHORIZATION_TYPE 'none',
             ACCESS_DELEGATION_MODE 'none'
         );
+        """
+    )
+
+    # Load the TLC zone lookup if the loader has cached it. The view's
+    # JOIN degrades gracefully via LEFT JOIN when the table is missing,
+    # so the demo still runs without zones (borough cols just NULL out).
+    if os.path.exists(TAXI_ZONES_CSV):
+        con.execute(
+            f"""
+            CREATE OR REPLACE TABLE taxi_zones AS
+            SELECT
+                CAST("LocationID" AS INT) AS locationid,
+                "Borough"     AS borough,
+                "Zone"        AS zone,
+                service_zone
+            FROM read_csv_auto('{TAXI_ZONES_CSV}', header=true);
+            """
+        )
+    else:
+        # Empty stub so the view still resolves.
+        con.execute(
+            "CREATE OR REPLACE TABLE taxi_zones("
+            "locationid INT, borough VARCHAR, zone VARCHAR, service_zone VARCHAR);"
+        )
+
+    # The enrichment view — every dimension name in DIMENSIONS is a
+    # real column here, so `SELECT day_of_week, count(*) FROM taxi
+    # GROUP BY 1` just works. Pivots run against this view too.
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW {VIEW_REF} AS
+        SELECT
+            t.*,
+            hour(t.tpep_pickup_datetime)                  AS hour_of_day,
+            dayname(t.tpep_pickup_datetime)               AS day_of_week,
+            date_trunc('day',   t.tpep_pickup_datetime)   AS pickup_date,
+            date_trunc('month', t.tpep_pickup_datetime)   AS pickup_month,
+            CASE t.payment_type
+                WHEN 1 THEN 'Credit card'
+                WHEN 2 THEN 'Cash'
+                WHEN 3 THEN 'No charge'
+                WHEN 4 THEN 'Dispute'
+                WHEN 5 THEN 'Unknown'
+                WHEN 6 THEN 'Voided'
+                ELSE 'Other'
+            END                                            AS payment_method,
+            CASE
+                WHEN t.passenger_count <= 1 THEN '1 pax'
+                WHEN t.passenger_count <= 2 THEN '2 pax'
+                WHEN t.passenger_count <= 4 THEN '3-4 pax'
+                ELSE '5+ pax'
+            END                                            AS passenger_bucket,
+            CASE
+                WHEN t.trip_distance <  1  THEN '<1 mi'
+                WHEN t.trip_distance <  3  THEN '1-3 mi'
+                WHEN t.trip_distance < 10  THEN '3-10 mi'
+                WHEN t.trip_distance < 30  THEN '10-30 mi'
+                ELSE '30+ mi'
+            END                                            AS trip_distance_bucket,
+            pz.borough                                     AS pickup_borough,
+            pz.zone                                        AS pickup_zone,
+            dz.borough                                     AS dropoff_borough,
+            dz.zone                                        AS dropoff_zone
+        FROM {TABLE_REF} t
+        LEFT JOIN taxi_zones pz ON t.pulocationid = pz.locationid
+        LEFT JOIN taxi_zones dz ON t.dolocationid = dz.locationid;
         """
     )
     return con
@@ -353,10 +459,11 @@ def _execute(
 
 
 def tool_schema_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
-    cols = con.execute(f"DESCRIBE {TABLE_REF}").fetchall()
-    cols_out = [{"name": c[0], "type": c[1]} for c in cols]
+    raw_cols = con.execute(f"DESCRIBE {TABLE_REF}").fetchall()
+    view_cols = con.execute(f"DESCRIBE {VIEW_REF}").fetchall()
+    zones_count = con.execute("SELECT count(*) FROM taxi_zones").fetchone()[0]
 
-    sample_cur = con.execute(f"SELECT * FROM {TABLE_REF} LIMIT 3")
+    sample_cur = con.execute(f"SELECT * FROM {VIEW_REF} LIMIT 3")
     sample_cols = [d[0] for d in sample_cur.description]
     sample_rows = [dict(zip(sample_cols, r)) for r in sample_cur.fetchall()]
     # JSON-encode any datetime/decimal so it round-trips cleanly.
@@ -369,11 +476,21 @@ def tool_schema_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
     sample_rows = [{k: _sanitize(v) for k, v in r.items()} for r in sample_rows]
 
     return {
-        "table": TABLE_REF,
-        "columns": cols_out,
+        "view": VIEW_REF,
+        "view_columns": [{"name": c[0], "type": c[1]} for c in view_cols],
+        "raw_iceberg_table": TABLE_REF,
+        "raw_iceberg_columns": [{"name": c[0], "type": c[1]} for c in raw_cols],
+        "zone_lookup_rows": zones_count,
         "dimensions": list_dimensions(),
         "measures": list_measures(),
         "sample_rows": sample_rows,
+        "notes": (
+            f"Use `{VIEW_REF}` for run_sql — every dimension name is a "
+            f"real column on this view. The raw Iceberg table "
+            f"`{TABLE_REF}` only has the canonical TLC columns. "
+            f"Borough/zone columns are NULL when the TLC zone lookup "
+            "isn't loaded (run `bash demo/tables/load.sh` to fetch it)."
+        ),
     }
 
 

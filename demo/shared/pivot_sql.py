@@ -47,38 +47,43 @@ class Measure:
 # Canonical NYC Yellow Taxi dimensions + measures
 # ---------------------------------------------------------------------------
 
+# All dimensions resolve as plain columns on the `taxi` view that
+# `tables.agent.make_duckdb_connection` sets up (derived dims are
+# materialized in the view's SELECT; borough/zone dims come from the
+# LEFT JOIN against the TLC zone lookup). Keeping sql_expr == name
+# means run_sql works the same way the pivot tool does.
 DIMENSIONS: Mapping[str, Dimension] = {
     d.name: d
     for d in [
         Dimension(
             "vendor_id",
             "vendorid",
-            "Taxi company / TPEP vendor id (1=Creative Mobile, 2=VeriFone).",
+            "TPEP vendor id (1=Creative Mobile, 2=VeriFone).",
         ),
         Dimension(
             "hour_of_day",
-            "hour(tpep_pickup_datetime)",
+            "hour_of_day",
             "Pickup hour 0-23.",
         ),
         Dimension(
             "day_of_week",
-            "dayname(tpep_pickup_datetime)",
+            "day_of_week",
             "Pickup weekday name (Monday..Sunday).",
         ),
         Dimension(
             "pickup_date",
-            "date_trunc('day', tpep_pickup_datetime)",
-            "Pickup calendar day.",
+            "pickup_date",
+            "Pickup calendar day (TIMESTAMP truncated).",
         ),
         Dimension(
             "pickup_month",
-            "date_trunc('month', tpep_pickup_datetime)",
-            "Pickup calendar month.",
+            "pickup_month",
+            "Pickup calendar month (TIMESTAMP truncated).",
         ),
         Dimension(
             "pickup_location_id",
             "pulocationid",
-            "TLC pickup zone id (1..265). Join with `taxi_zone_lookup` for human-readable.",
+            "TLC pickup zone id (1..265). Prefer `pickup_borough` or `pickup_zone` for human-readable.",
         ),
         Dimension(
             "dropoff_location_id",
@@ -86,35 +91,39 @@ DIMENSIONS: Mapping[str, Dimension] = {
             "TLC dropoff zone id.",
         ),
         Dimension(
-            "payment_type",
-            (
-                "CASE payment_type WHEN 1 THEN 'Credit card' "
-                "WHEN 2 THEN 'Cash' WHEN 3 THEN 'No charge' "
-                "WHEN 4 THEN 'Dispute' WHEN 5 THEN 'Unknown' "
-                "WHEN 6 THEN 'Voided' ELSE 'Other' END"
-            ),
-            "How the trip was paid (Credit card / Cash / ...).",
+            "pickup_borough",
+            "pickup_borough",
+            "Pickup borough name (Manhattan / Brooklyn / Queens / Bronx / Staten Island / EWR), via TLC zone JOIN.",
+        ),
+        Dimension(
+            "pickup_zone",
+            "pickup_zone",
+            "Pickup TLC zone name (e.g. 'JFK Airport', 'Times Sq/Theatre District'), via TLC zone JOIN.",
+        ),
+        Dimension(
+            "dropoff_borough",
+            "dropoff_borough",
+            "Dropoff borough name, via TLC zone JOIN.",
+        ),
+        Dimension(
+            "dropoff_zone",
+            "dropoff_zone",
+            "Dropoff TLC zone name, via TLC zone JOIN.",
+        ),
+        Dimension(
+            "payment_method",
+            "payment_method",
+            "How the trip was paid (Credit card / Cash / No charge / Dispute / Unknown / Voided).",
         ),
         Dimension(
             "passenger_bucket",
-            (
-                "CASE WHEN passenger_count <= 1 THEN '1 pax' "
-                "WHEN passenger_count <= 2 THEN '2 pax' "
-                "WHEN passenger_count <= 4 THEN '3-4 pax' "
-                "ELSE '5+ pax' END"
-            ),
+            "passenger_bucket",
             "Bucketed passenger count: 1, 2, 3-4, 5+.",
         ),
         Dimension(
             "trip_distance_bucket",
-            (
-                "CASE WHEN trip_distance < 1 THEN '<1 mi' "
-                "WHEN trip_distance < 3 THEN '1-3 mi' "
-                "WHEN trip_distance < 10 THEN '3-10 mi' "
-                "WHEN trip_distance < 30 THEN '10-30 mi' "
-                "ELSE '30+ mi' END"
-            ),
-            "Bucketed trip distance.",
+            "trip_distance_bucket",
+            "Bucketed trip distance: <1, 1-3, 3-10, 10-30, 30+ mi.",
         ),
     ]
 }
@@ -214,7 +223,7 @@ def build_pivot_sql(
     measure: str,
     where: Optional[str] = None,
     *,
-    table: str = "lake.nyc.yellow",
+    table: str = "taxi",
     row_limit: int = 200,
     with_rollup: bool = True,
 ) -> str:
