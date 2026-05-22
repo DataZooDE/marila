@@ -197,13 +197,15 @@ def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
         return t
 
     # ── Hierarchical path: pivot with rollup ──
+    # Render one column per row dim (so dim values are unambiguous —
+    # `hour=0` and `vendor=1` are obviously different cells) and leave
+    # the cell BLANK on a subtotal row when its dim was rolled up.
+    # The leftmost dim column doubles as the TOTAL-row label cell.
     n = len(r.row_dim_names)
     try:
         dim_idx = [r.columns.index(name) for name in r.row_dim_names]
         g_idx = [r.columns.index(f"_g_{name}") for name in r.row_dim_names]
     except ValueError:
-        # Result shape doesn't match the expected (dims, g_flags, measures)
-        # layout — fall back to flat render.
         return _render_result_table(
             QueryResult(
                 sql=r.sql, columns=r.columns, rows=r.rows,
@@ -212,35 +214,46 @@ def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
             ),
             max_rows=max_rows,
         )
-    hidden = set(dim_idx) | set(g_idx)
-    measure_idx = [i for i in range(len(r.columns)) if i not in hidden]
+    hidden_for_display = set(g_idx)  # never show GROUPING flags
+    measure_idx = [
+        i for i in range(len(r.columns))
+        if i not in hidden_for_display and i not in dim_idx
+    ]
     measure_names = [r.columns[i] for i in measure_idx]
 
     t = RichTable(title=title, show_header=True, header_style="bold cyan")
-    # Hierarchy column on the left, measures right-aligned to its right.
-    t.add_column("hierarchy", no_wrap=True)
+    # One column per row dim — clear, unambiguous.
+    for name in r.row_dim_names:
+        t.add_column(name, no_wrap=True)
     for name in measure_names:
         t.add_column(name, justify="right")
 
     for row in r.rows[:max_rows]:
-        # Level = number of GROUPING flags equal to 0 (the dims that
-        # still carry a real value at this row).
         g_flags = [row[i] for i in g_idx]
         level = sum(1 for g in g_flags if g == 0)
 
-        if level == 0:
-            label = "TOTAL"
-            indent = ""
-            style = "bold magenta"
-        else:
-            raw = row[dim_idx[level - 1]]
-            label = "(NULL)" if raw is None else str(raw)
-            indent = "  " * (level - 1)
-            style = "bold" if level < n else ""
+        # One cell per dim — empty if rolled up, value otherwise.
+        dim_cells = []
+        for di, gi in zip(dim_idx, g_idx):
+            if row[gi] == 1:
+                dim_cells.append("")  # rolled up
+            else:
+                v = row[di]
+                dim_cells.append("(NULL)" if v is None else str(v))
 
-        hierarchy_cell = f"{indent}{label}"
+        # Style + special label
+        if level == 0:
+            # Grand total — every dim cell is blank; commandeer the
+            # leftmost one to carry the TOTAL marker.
+            dim_cells[0] = "TOTAL"
+            style: Optional[str] = "bold magenta"
+        elif level < n:
+            style = "bold"
+        else:
+            style = None
+
         measure_cells = [_fmt_value(row[i]) for i in measure_idx]
-        t.add_row(hierarchy_cell, *measure_cells, style=style or None)
+        t.add_row(*dim_cells, *measure_cells, style=style)
 
     if r.row_count > max_rows:
         t.caption = f"showing first {max_rows} of {r.row_count}"
