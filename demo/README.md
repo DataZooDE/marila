@@ -28,7 +28,7 @@ tables TUI can also drive **OpenAI** or **Gemini** via
 | Role | Default | Override |
 |---|---|---|
 | Chat provider | `ollama` (local) | `CHAT_PROVIDER={ollama,openai,gemini}` |
-| Chat model | `gemma4:latest` (ollama) / `gpt-4o-mini` (openai) / `gemini-3.5-flash` (gemini) | `CHAT_MODEL=…` |
+| Chat model | `gemma4:latest` (ollama) / `gpt-5.4-mini` (openai) / `gemini-3.5-flash` (gemini) | `CHAT_MODEL=…` |
 | Embeddings (vector demo only) | `embeddinggemma:latest` | `EMBED_MODEL=...` |
 
 ### Non-local chat models (tables TUI)
@@ -46,8 +46,8 @@ CHAT_PROVIDER=openai cd demo && uv run python -m tables.chat
 CHAT_PROVIDER=gemini cd demo && uv run python -m tables.chat
 
 # Override the default model for either provider:
-CHAT_PROVIDER=openai CHAT_MODEL=gpt-5-mini uv run python -m tables.chat
-CHAT_PROVIDER=gemini CHAT_MODEL=gemini-2.5-pro uv run python -m tables.chat
+CHAT_PROVIDER=openai CHAT_MODEL=gpt-5.4 uv run python -m tables.chat
+CHAT_PROVIDER=gemini CHAT_MODEL=gemini-3.5-pro uv run python -m tables.chat
 ```
 
 The TUI keybinds and slash commands behave identically across
