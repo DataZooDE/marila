@@ -675,10 +675,14 @@ def run_turn(
     last_tool_signature: Optional[str] = None
     repeat_count = 0
     REPEAT_LIMIT = 2
-    # Template-detection retry: once per turn, if the model emits a
-    # SQL-as-answer reply (e.g. "SELECT … FROM your_data_table") with
-    # no data tools called, inject a corrective and re-enter the loop.
-    template_retried = False
+    # Corrective-retry budget: ONE per turn covering two failure modes
+    # that share a root cause ("model produced text but no data"):
+    #   (a) SQL-template-as-answer ("SELECT … FROM your_data_table")
+    #   (b) thinking-only response (model reasoned but didn't call a
+    #       tool — gemma4 in particular drifts here on harder asks).
+    # The corrective message is the same in both cases: "STOP, call a
+    # tool with the real table name now".
+    corrective_retried = False
 
     for hop in range(MAX_TOOL_HOPS):
         emit("hop", n=hop + 1, total=MAX_TOOL_HOPS, model=state.chat_model)
@@ -711,43 +715,67 @@ def run_turn(
         state.messages.append(_message_to_dict(msg))
 
         if not tool_calls:
-            text_so_far = content.strip() or thinking.strip()
-            # If the model wrote a SQL-template-as-answer AND hasn't
-            # actually fetched any data this turn, retry ONCE with a
-            # corrective message. Without this, weaker tool-use
-            # models (gemma4 in particular) sometimes default to
-            # "here's the SQL you can run" and never call a tool.
             no_data_called = len(state.last_queries) == queries_at_start
+            content_stripped = content.strip()
+            thinking_stripped = thinking.strip()
+            is_template = bool(content_stripped) and _looks_like_sql_template(content_stripped)
+            # "thinking-only" = model reasoned but produced no
+            # user-facing content and no tool calls. Common gemma4
+            # failure mode on multi-step asks.
+            is_thinking_only = (not content_stripped) and bool(thinking_stripped)
+
             if (
-                not template_retried
+                not corrective_retried
                 and no_data_called
-                and text_so_far
-                and _looks_like_sql_template(text_so_far)
+                and (is_template or is_thinking_only)
             ):
-                template_retried = True
-                emit("error", phase="template_detected", snippet=text_so_far[:80])
+                corrective_retried = True
+                phase = "template_detected" if is_template else "thinking_only_no_tools"
+                snippet = (content_stripped or thinking_stripped)[:80]
+                emit("error", phase=phase, snippet=snippet)
                 state.messages.append(
                     {
                         "role": "user",
                         "content": (
-                            "Your previous response was a SQL template "
-                            "with placeholder identifiers (your_data_table "
-                            "/ your_table / <table>). The actual table is "
-                            f"`{VIEW_REF}`. STOP emitting templates — call "
-                            f"the `run_sql` tool right now with the real "
-                            f"table name `{VIEW_REF}` and produce data. "
-                            "If you don't call a tool on your next turn, "
-                            "the user will see no answer."
+                            "Your previous response produced no data. "
+                            + (
+                                "It was a SQL template with placeholder "
+                                "identifiers (your_data_table / "
+                                "your_table / <table>). "
+                                if is_template
+                                else "You reasoned through the plan in your "
+                                "`thinking` channel but called no tool and "
+                                "emitted no `content`. "
+                            )
+                            + f"STOP — call the `run_sql` or `pivot` tool "
+                            f"RIGHT NOW with the real table name "
+                            f"`{VIEW_REF}`. Do not plan, do not recommend "
+                            "SQL — execute it. If you do not call a tool "
+                            "on your next turn, the user sees no answer."
                         ),
                     }
                 )
                 continue  # re-enter the loop with the corrective in context
-            if content.strip():
+
+            if content_stripped:
                 final_text = content
-            elif thinking.strip():
+            elif thinking_stripped:
+                # Persistent thinking-only after the retry, OR retry
+                # already burned. Don't dump raw thinking — it's
+                # internal monologue, not an answer.
                 final_text = (
-                    "(model emitted no `content` channel — falling back to "
-                    "its `thinking` channel)\n\n" + thinking
+                    "_The model planned a response in its `thinking` "
+                    "channel but didn't produce a `content` answer or "
+                    "call a tool. This is a known weakness of `gemma4` "
+                    "on multi-step questions._\n\n"
+                    "Try one of:\n"
+                    "- `/reset` and rephrase more concretely "
+                    "(e.g. \"pivot rows=`pickup_borough`, "
+                    "cols=`payment_method`, measure=`total_revenue`\")\n"
+                    "- `/model granite4:latest` (better at tool-use "
+                    "discipline)\n"
+                    "- `/use N` to fall back on a previous query "
+                    "and tweak via controls"
                 )
             else:
                 final_text = (
