@@ -407,6 +407,13 @@ class QueryResult:
     # subtotal-level flags. Empty list ⇒ render flat as a generic
     # `run_sql` result.
     row_dim_names: list[str] = field(default_factory=list)
+    # Pivot-tool args (populated by `tool_pivot` only — None for
+    # `run_sql` results). The TUI uses these to sync the controls
+    # pane after the LLM runs a pivot, so the human can pick up
+    # from where the LLM left off.
+    col_dim_names: list[str] = field(default_factory=list)
+    measure: Optional[str] = None
+    where: Optional[str] = None
 
 
 @dataclass
@@ -518,11 +525,23 @@ def tool_pivot(
     where: Optional[str] = None,
     row_limit: int = DEFAULT_ROW_LIMIT,
 ) -> QueryResult:
+    rows_norm = coerce_dim_list(rows)
+    cols_norm = coerce_dim_list(cols)
+    where_norm = (where or "").strip() or None
     try:
         sql = build_pivot_sql(rows, cols, measure, where, row_limit=row_limit)
     except ValueError as e:
-        return QueryResult(sql="", columns=[], rows=[], row_count=0, elapsed_ms=0.0, error=str(e))
-    return _execute(con, sql, row_dim_names=coerce_dim_list(rows))
+        r = QueryResult(sql="", columns=[], rows=[], row_count=0, elapsed_ms=0.0, error=str(e))
+        r.row_dim_names = rows_norm
+        r.col_dim_names = cols_norm
+        r.measure = measure
+        r.where = where_norm
+        return r
+    r = _execute(con, sql, row_dim_names=rows_norm)
+    r.col_dim_names = cols_norm
+    r.measure = measure
+    r.where = where_norm
+    return r
 
 
 def tool_run_sql(con: duckdb.DuckDBPyConnection, *, sql: str) -> QueryResult:

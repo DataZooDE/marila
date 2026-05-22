@@ -528,6 +528,35 @@ class TablesChat(App[None]):
         lv = self.query_one(f"#{which}-list", ListView)
         lv.index = new
 
+    def _sync_controls_from_pivot(
+        self,
+        rows: list[str],
+        cols: list[str],
+        measure: str,
+        where: Optional[str],
+    ) -> None:
+        """Mirror a pivot the LLM just ran into the controls pane.
+        Either side (human via F5 or LLM via the `pivot` tool) leaves
+        the controls reflecting whatever produced the latest result —
+        one canonical pivot state, two input modes."""
+        # Drop dims we don't recognise (LLM might pass an alias).
+        valid_rows = [r for r in rows if r in DIMENSIONS]
+        valid_cols = [c for c in cols if c in DIMENSIONS]
+        self.rows_order = list(valid_rows) or list(self.rows_order)
+        self.cols_order = list(valid_cols)
+        self._refresh_pivot_lists()
+        try:
+            sel = self.query_one("#sel-measure", Select)
+            if measure in MEASURES:
+                sel.value = measure
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            inp = self.query_one("#where-input", Input)
+            inp.value = where or ""
+        except Exception:  # noqa: BLE001
+            pass
+
     # ----- bindings -----
 
     def action_reset(self) -> None:
@@ -733,6 +762,18 @@ class TablesChat(App[None]):
         chat = self.query_one("#chat-log", RichLog)
         chat.write("\n[bold magenta]assistant>[/bold magenta]")
         chat.write(RichMarkdown(msg.text))
+
+        # Sync the controls pane to whatever pivot the LLM ran most
+        # recently, so the human picks up where the LLM left off:
+        # change one dim, F5, see the variant. We scan in reverse so
+        # the latest pivot wins. `run_sql` results carry no measure
+        # and are skipped.
+        for q in reversed(msg.queries):
+            if q.measure is not None:
+                self._sync_controls_from_pivot(
+                    q.row_dim_names, q.col_dim_names, q.measure, q.where
+                )
+                break
 
         # Inline trace: every query the agent ran during this turn,
         # numbered so a digit shortcut (focus chat with F3 → 1..9)
