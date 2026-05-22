@@ -32,8 +32,8 @@ import duckdb
 import ollama
 
 from shared.pivot_sql import (
-    DIMENSIONS,
-    MEASURES,
+    DIMENSIONS,  # noqa: F401 — re-exported for callers
+    MEASURES,    # noqa: F401 — re-exported for callers
     build_pivot_sql,
     coerce_dim_list,
     list_dimensions,
@@ -274,6 +274,12 @@ class QueryResult:
     row_count: int
     elapsed_ms: float
     error: Optional[str] = None
+    # Hierarchy metadata — populated by `tool_pivot` so the TUI's
+    # renderer knows to fold the N row-dim columns into a single
+    # indented hierarchy column and treat `_g_*` columns as
+    # subtotal-level flags. Empty list ⇒ render flat as a generic
+    # `run_sql` result.
+    row_dim_names: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -319,7 +325,12 @@ def _reject_writes(sql: str) -> Optional[str]:
     return None
 
 
-def _execute(con: duckdb.DuckDBPyConnection, sql: str) -> QueryResult:
+def _execute(
+    con: duckdb.DuckDBPyConnection,
+    sql: str,
+    *,
+    row_dim_names: Optional[list[str]] = None,
+) -> QueryResult:
     if (msg := _reject_writes(sql)) is not None:
         return QueryResult(sql=sql, columns=[], rows=[], row_count=0, elapsed_ms=0.0, error=msg)
     t0 = time.monotonic()
@@ -337,6 +348,7 @@ def _execute(con: duckdb.DuckDBPyConnection, sql: str) -> QueryResult:
         rows=rows,
         row_count=len(rows),
         elapsed_ms=elapsed,
+        row_dim_names=list(row_dim_names or []),
     )
 
 
@@ -378,7 +390,7 @@ def tool_pivot(
         sql = build_pivot_sql(rows, cols, measure, where, row_limit=row_limit)
     except ValueError as e:
         return QueryResult(sql="", columns=[], rows=[], row_count=0, elapsed_ms=0.0, error=str(e))
-    return _execute(con, sql)
+    return _execute(con, sql, row_dim_names=coerce_dim_list(rows))
 
 
 def tool_run_sql(con: duckdb.DuckDBPyConnection, *, sql: str) -> QueryResult:

@@ -164,47 +164,13 @@ def coerce_dim_list(x: Any) -> list[str]:
     return [str(s).strip() for s in x if str(s).strip()]
 
 
-def build_pivot_sql(
+def _normalize_inputs(
     rows: list[str] | str,
     cols: list[str] | str | None,
     measure: str,
-    where: Optional[str] = None,
-    *,
-    table: str = "lake.nyc.yellow",
-    row_limit: int = 200,
-) -> str:
-    """Assemble a single-statement SQL pivot with arbitrary numbers of
-    row + column dimensions.
-
-    - `rows`: list of dimension names (or comma-separated string). At least one.
-    - `cols`: list of dimension names (or comma-separated string), or None /
-      empty list for "no pivot, just GROUP BY rows".
-    - `measure`: measure name (key of `MEASURES`).
-    - `where`: optional free-text WHERE body. Passed through verbatim.
-    - `row_limit`: hard LIMIT on the outer query.
-
-    Shapes:
-
-      cols == [] / None  →  plain GROUP BY:
-        SELECT r1-expr AS r1, …, rN-expr AS rN, measure-expr AS measure
-          FROM table [WHERE …]
-         GROUP BY 1, …, N
-         ORDER BY <last column>
-         LIMIT N;
-
-      cols == [c1, …, cM]  →  DuckDB PIVOT with multi-column ON:
-        PIVOT (
-          SELECT r1, …, rN, c1, …, cM, measure
-            FROM table [WHERE …]
-           GROUP BY 1, …, N+M
-        ) ON c1, …, cM USING FIRST(measure)
-        GROUP BY r1, …, rN
-        ORDER BY r1, …, rN
-        LIMIT N;
-
-    Multi-column `ON` is DuckDB's native cross-product spread: the
-    output has one column per distinct (c1-val, c2-val, …) tuple.
-    """
+) -> tuple[list[Dimension], list[Dimension], Measure]:
+    """Shared validation for both build paths. Returns the
+    resolved Dimension / Measure objects."""
     rows_list = coerce_dim_list(rows)
     cols_list = coerce_dim_list(cols)
     if not rows_list:
@@ -233,46 +199,119 @@ def build_pivot_sql(
     rows_list = [r for r in rows_list if not (r in seen or seen.add(r))]
     seen = set()
     cols_list = [c for c in cols_list if not (c in seen or seen.add(c))]
+    return [DIMENSIONS[r] for r in rows_list], [DIMENSIONS[c] for c in cols_list], MEASURES[measure]
 
-    row_dims = [DIMENSIONS[r] for r in rows_list]
-    col_dims = [DIMENSIONS[c] for c in cols_list]
-    md = MEASURES[measure]
+
+def grouping_col_names(rows: list[str] | str) -> list[str]:
+    """`day_of_week → _g_day_of_week`. The renderer uses these as the
+    sentinel columns that mark hierarchy levels."""
+    return [f"_g_{r}" for r in coerce_dim_list(rows)]
+
+
+def build_pivot_sql(
+    rows: list[str] | str,
+    cols: list[str] | str | None,
+    measure: str,
+    where: Optional[str] = None,
+    *,
+    table: str = "lake.nyc.yellow",
+    row_limit: int = 200,
+    with_rollup: bool = True,
+) -> str:
+    """Assemble a single-statement SQL pivot with hierarchical rollup
+    subtotals + a grand-TOTAL row.
+
+    Output column order (left → right) is always:
+
+        <row-dim-1>, …, <row-dim-N>,
+        _g_<row-dim-1>, …, _g_<row-dim-N>,    -- GROUPING(...) flags
+        <measure or spread columns>
+
+    The `_g_*` columns are 1 when that dim was rolled up (NULL value
+    in the row) and 0 when it carries an actual value. The renderer
+    uses them to identify which level each row belongs to. Sort is
+    pre-arranged so each parent comes before its children
+    (`g DESC, dim NULLS FIRST` per dim).
+
+    `with_rollup=False` falls back to a plain GROUP BY without
+    subtotals — used by the test harness when we want a clean
+    "leaves only" check.
+    """
+    row_dims, col_dims, md = _normalize_inputs(rows, cols, measure)
     where_clause = f"WHERE {where}" if where and where.strip() else ""
+    row_names = [d.name for d in row_dims]
     row_selects = ", ".join(f"{d.sql_expr} AS {d.name}" for d in row_dims)
-    row_names = ", ".join(d.name for d in row_dims)
+    grouping_selects = ", ".join(
+        f"GROUPING({d.name}) AS _g_{d.name}" for d in row_dims
+    )
+    grouping_zero_selects = ", ".join(f"0 AS _g_{d.name}" for d in row_dims)
+    row_group_clause = (
+        f"ROLLUP({', '.join(row_names)})" if with_rollup else ", ".join(row_names)
+    )
+    order_clause = " ORDER BY " + ", ".join(
+        f"_g_{d.name} DESC, {d.name} NULLS FIRST" for d in row_dims
+    )
 
-    # ── No pivot: plain GROUP BY ──
+    # ── No pivot: plain SELECT with GROUP BY ROLLUP ──
     if not col_dims:
-        positions = ", ".join(str(i + 1) for i in range(len(row_dims)))
-        # 1-dim: sort by the measure descending (best leaderboard UX).
-        # N-dim: sort by row dimensions in declared order (predictable).
-        order_clause = (
-            f"ORDER BY {md.name} DESC" if len(row_dims) == 1 else f"ORDER BY {row_names}"
-        )
+        if with_rollup:
+            return (
+                f"SELECT {row_selects}, {grouping_selects}, {md.sql_expr} AS {md.name} "
+                f"FROM {table} {where_clause} "
+                f"GROUP BY {row_group_clause} "
+                f"{order_clause} "
+                f"LIMIT {row_limit}"
+            ).replace("  ", " ").strip()
         return (
-            f"SELECT {row_selects}, {md.sql_expr} AS {md.name} "
+            f"SELECT {row_selects}, {grouping_zero_selects}, {md.sql_expr} AS {md.name} "
             f"FROM {table} {where_clause} "
-            f"GROUP BY {positions} "
-            f"{order_clause} "
+            f"GROUP BY {', '.join(row_names)} "
+            f"ORDER BY " + (
+                f"{md.name} DESC" if len(row_dims) == 1 else ", ".join(row_names)
+            ) + f" "
             f"LIMIT {row_limit}"
         ).replace("  ", " ").strip()
 
-    # ── PIVOT: multi-column ON spread ──
+    # ── PIVOT with rollup subtotals ──
+    # DuckDB's PIVOT doesn't accept ROLLUP in its outer GROUP BY, so
+    # we pre-aggregate via GROUPING SETS in an inner subquery, then
+    # PIVOT spreads the col dims and uses FIRST() (each rolled-up
+    # (level, col-dim) combination has exactly one source row).
     col_selects = ", ".join(f"{d.sql_expr} AS {d.name}" for d in col_dims)
     col_names = ", ".join(d.name for d in col_dims)
-    inner_positions = ", ".join(
-        str(i + 1) for i in range(len(row_dims) + len(col_dims))
+    # Enumerate the row-rollup levels as explicit GROUPING SETS.
+    # For rows=[r1, r2, r3] this produces:
+    #   (r1, r2, r3, c…), (r1, r2, c…), (r1, c…), (c…)
+    if with_rollup:
+        grouping_sets = []
+        for level in range(len(row_dims), -1, -1):
+            kept = row_names[:level]
+            grouping_sets.append("(" + ", ".join(kept + [c.name for c in col_dims]) + ")")
+        grouping_clause = (
+            "GROUPING SETS (" + ", ".join(grouping_sets) + ")"
+        )
+    else:
+        grouping_clause = ", ".join(row_names + [c.name for c in col_dims])
+    inner = (
+        f"WITH src AS ("
+        f"SELECT {row_selects}, {col_selects}, * "
+        f"FROM {table} {where_clause}"
+        f"), "
+        f"agg AS ("
+        f"SELECT {', '.join(row_names)}, {col_names}, {md.sql_expr} AS {md.name}, "
+        f"{grouping_selects} "
+        f"FROM src "
+        f"GROUP BY {grouping_clause}"
+        f")"
     )
+    # The PIVOT's outer GROUP BY has to include the _g_* columns so
+    # rollup rows aren't accidentally re-aggregated.
+    outer_group = ", ".join(row_names + [f"_g_{d.name}" for d in row_dims])
     return (
-        f"PIVOT ("
-        f"SELECT {row_selects}, {col_selects}, {md.sql_expr} AS {md.name} "
-        f"FROM {table} {where_clause} "
-        f"GROUP BY {inner_positions}"
-        f") "
-        f"ON {col_names} "
-        f"USING FIRST({md.name}) "
-        f"GROUP BY {row_names} "
-        f"ORDER BY {row_names} "
+        f"{inner} "
+        f"PIVOT agg ON {col_names} USING FIRST({md.name}) "
+        f"GROUP BY {outer_group} "
+        f"{order_clause} "
         f"LIMIT {row_limit}"
     ).replace("  ", " ").strip()
 

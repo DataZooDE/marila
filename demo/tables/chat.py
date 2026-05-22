@@ -155,17 +155,93 @@ class QueryDetail(ModalScreen[None]):
             yield Label("Esc / q to close", classes="hint")
 
 
-def _render_result_table(r: QueryResult, *, max_rows: int = 50) -> RichTable:
-    """Render a QueryResult as a Rich Table for the chat pane + modal."""
+def _fmt_value(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, int):
+        return f"{v:,}"
+    if isinstance(v, float):
+        # 2 decimals + thousand separators; trim trailing .00 for clean ints
+        s = f"{v:,.2f}"
+        return s[:-3] if s.endswith(".00") else s
+    return str(v)
+
+
+def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
+    """Render a QueryResult.
+
+    If `row_dim_names` is set (pivot path), fold the N row-dim columns
+    into a single indented "hierarchy" column with TOTAL row at top,
+    subtotals bold, leaves plain. The `_g_*` GROUPING flags drive the
+    level detection; they're never displayed.
+
+    If `row_dim_names` is empty (raw `/sql` or schema lookup), fall
+    back to a flat one-column-per-result-column render.
+    """
     title = (
         f"{r.row_count} row{'s' if r.row_count != 1 else ''} "
         f"({r.elapsed_ms:.0f} ms)"
     )
+
+    # ── Flat path: no hierarchy info ──
+    if not r.row_dim_names:
+        t = RichTable(title=title, show_header=True, header_style="bold cyan")
+        for c in r.columns:
+            t.add_column(str(c), justify="right")
+        for row in r.rows[:max_rows]:
+            t.add_row(*[_fmt_value(v) for v in row])
+        if r.row_count > max_rows:
+            t.caption = f"showing first {max_rows} of {r.row_count}"
+        return t
+
+    # ── Hierarchical path: pivot with rollup ──
+    n = len(r.row_dim_names)
+    try:
+        dim_idx = [r.columns.index(name) for name in r.row_dim_names]
+        g_idx = [r.columns.index(f"_g_{name}") for name in r.row_dim_names]
+    except ValueError:
+        # Result shape doesn't match the expected (dims, g_flags, measures)
+        # layout — fall back to flat render.
+        return _render_result_table(
+            QueryResult(
+                sql=r.sql, columns=r.columns, rows=r.rows,
+                row_count=r.row_count, elapsed_ms=r.elapsed_ms,
+                error=r.error,
+            ),
+            max_rows=max_rows,
+        )
+    hidden = set(dim_idx) | set(g_idx)
+    measure_idx = [i for i in range(len(r.columns)) if i not in hidden]
+    measure_names = [r.columns[i] for i in measure_idx]
+
     t = RichTable(title=title, show_header=True, header_style="bold cyan")
-    for c in r.columns:
-        t.add_column(str(c))
+    # Hierarchy column on the left, measures right-aligned to its right.
+    t.add_column("hierarchy", no_wrap=True)
+    for name in measure_names:
+        t.add_column(name, justify="right")
+
     for row in r.rows[:max_rows]:
-        t.add_row(*[("" if v is None else str(v)) for v in row])
+        # Level = number of GROUPING flags equal to 0 (the dims that
+        # still carry a real value at this row).
+        g_flags = [row[i] for i in g_idx]
+        level = sum(1 for g in g_flags if g == 0)
+
+        if level == 0:
+            label = "TOTAL"
+            indent = ""
+            style = "bold magenta"
+        else:
+            raw = row[dim_idx[level - 1]]
+            label = "(NULL)" if raw is None else str(raw)
+            indent = "  " * (level - 1)
+            style = "bold" if level < n else ""
+
+        hierarchy_cell = f"{indent}{label}"
+        measure_cells = [_fmt_value(row[i]) for i in measure_idx]
+        t.add_row(hierarchy_cell, *measure_cells, style=style or None)
+
     if r.row_count > max_rows:
         t.caption = f"showing first {max_rows} of {r.row_count}"
     return t
