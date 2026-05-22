@@ -21,6 +21,7 @@ the model into the SQL planner.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -217,6 +218,23 @@ def grouping_col_names(rows: list[str] | str) -> list[str]:
     return [f"_g_{r}" for r in coerce_dim_list(rows)]
 
 
+def _split_where_having(text: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """If the user typed a filter that references a measure name
+    (e.g. `total_revenue > 1000`), route it to HAVING instead of WHERE
+    so DuckDB doesn't reject it with "WHERE clause cannot contain
+    aggregates". Detection is a word-boundary check against the
+    MEASURES registry — false positives are unlikely since measure
+    names are distinctive (`total_revenue`, `trip_count`, …).
+    """
+    body = (text or "").strip()
+    if not body:
+        return (None, None)
+    words = set(re.findall(r"\b\w+\b", body))
+    if words & set(MEASURES.keys()):
+        return (None, body)  # promote to HAVING
+    return (body, None)
+
+
 def build_pivot_sql(
     rows: list[str] | str,
     cols: list[str] | str | None,
@@ -247,7 +265,13 @@ def build_pivot_sql(
     "leaves only" check.
     """
     row_dims, col_dims, md = _normalize_inputs(rows, cols, measure)
-    where_clause = f"WHERE {where}" if where and where.strip() else ""
+    # Filter routing: if the user wrote `total_revenue > 1000` (i.e.
+    # references a MEASURE name), it's an aggregate filter and
+    # belongs in HAVING, not WHERE. Auto-promote so the controls
+    # pane's single WHERE input does the right thing.
+    where_body, having_body = _split_where_having(where)
+    where_clause = f"WHERE {where_body}" if where_body else ""
+    having_clause = f"HAVING {having_body}" if having_body else ""
     row_names = [d.name for d in row_dims]
     row_selects = ", ".join(f"{d.sql_expr} AS {d.name}" for d in row_dims)
     grouping_selects = ", ".join(
@@ -268,6 +292,7 @@ def build_pivot_sql(
                 f"SELECT {row_selects}, {grouping_selects}, {md.sql_expr} AS {md.name} "
                 f"FROM {table} {where_clause} "
                 f"GROUP BY {row_group_clause} "
+                f"{having_clause} "
                 f"{order_clause} "
                 f"LIMIT {row_limit}"
             ).replace("  ", " ").strip()
@@ -275,6 +300,7 @@ def build_pivot_sql(
             f"SELECT {row_selects}, {grouping_zero_selects}, {md.sql_expr} AS {md.name} "
             f"FROM {table} {where_clause} "
             f"GROUP BY {', '.join(row_names)} "
+            f"{having_clause} "
             f"ORDER BY " + (
                 f"{md.name} DESC" if len(row_dims) == 1 else ", ".join(row_names)
             ) + f" "
@@ -310,7 +336,8 @@ def build_pivot_sql(
         f"SELECT {', '.join(row_names)}, {col_names}, {md.sql_expr} AS {md.name}, "
         f"{grouping_selects} "
         f"FROM src "
-        f"GROUP BY {grouping_clause}"
+        f"GROUP BY {grouping_clause} "
+        f"{having_clause}"
         f")"
     )
     # The PIVOT's outer GROUP BY has to include the _g_* columns so

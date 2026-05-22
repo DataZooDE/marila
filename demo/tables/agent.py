@@ -588,6 +588,30 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     return out
 
 
+# Hallmarks of "model emitted SQL-as-answer instead of executing it".
+# We retry once with a corrective system message when we detect any
+# of these AND the model didn't call a data tool this turn.
+_TEMPLATE_FLAGS = (
+    "your_data_table",
+    "your_table",
+    "spaghetti_table",
+    "<table_name>",
+    "<table>",
+    "table_name_here",
+    "actual table name",
+    "actual_table_name",
+    "please replace",
+    "replace this",
+    "replace 'your",
+    "replace `your",
+)
+
+
+def _looks_like_sql_template(text: str) -> bool:
+    low = text.lower()
+    return any(flag in low for flag in _TEMPLATE_FLAGS)
+
+
 def _result_to_tool_payload(r: QueryResult) -> str:
     """Serialise a QueryResult for the model. Truncate rows so we don't
     blow the context window."""
@@ -642,6 +666,7 @@ def run_turn(
 
     state.messages.append({"role": "user", "content": user_text})
     final_text = ""
+    queries_at_start = len(state.last_queries)
 
     # Loop-breaker: if the model calls the same tool with the same
     # arguments N times in a row, we treat that as "stuck" and force
@@ -650,6 +675,10 @@ def run_turn(
     last_tool_signature: Optional[str] = None
     repeat_count = 0
     REPEAT_LIMIT = 2
+    # Template-detection retry: once per turn, if the model emits a
+    # SQL-as-answer reply (e.g. "SELECT … FROM your_data_table") with
+    # no data tools called, inject a corrective and re-enter the loop.
+    template_retried = False
 
     for hop in range(MAX_TOOL_HOPS):
         emit("hop", n=hop + 1, total=MAX_TOOL_HOPS, model=state.chat_model)
@@ -682,6 +711,37 @@ def run_turn(
         state.messages.append(_message_to_dict(msg))
 
         if not tool_calls:
+            text_so_far = content.strip() or thinking.strip()
+            # If the model wrote a SQL-template-as-answer AND hasn't
+            # actually fetched any data this turn, retry ONCE with a
+            # corrective message. Without this, weaker tool-use
+            # models (gemma4 in particular) sometimes default to
+            # "here's the SQL you can run" and never call a tool.
+            no_data_called = len(state.last_queries) == queries_at_start
+            if (
+                not template_retried
+                and no_data_called
+                and text_so_far
+                and _looks_like_sql_template(text_so_far)
+            ):
+                template_retried = True
+                emit("error", phase="template_detected", snippet=text_so_far[:80])
+                state.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous response was a SQL template "
+                            "with placeholder identifiers (your_data_table "
+                            "/ your_table / <table>). The actual table is "
+                            f"`{VIEW_REF}`. STOP emitting templates — call "
+                            f"the `run_sql` tool right now with the real "
+                            f"table name `{VIEW_REF}` and produce data. "
+                            "If you don't call a tool on your next turn, "
+                            "the user will see no answer."
+                        ),
+                    }
+                )
+                continue  # re-enter the loop with the corrective in context
             if content.strip():
                 final_text = content
             elif thinking.strip():
