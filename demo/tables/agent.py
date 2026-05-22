@@ -64,13 +64,17 @@ OLLAMA_HOST = os.environ.get("OLLAMA_ENDPOINT", "http://localhost:11434")
 CHAT_PROVIDER = os.environ.get("CHAT_PROVIDER", "ollama").lower()
 # Per-provider default model; user can override with CHAT_MODEL or
 # /model in the TUI. Picks lean tool-use-capable defaults that don't
-# burn dollars on a chat-shaped probe.
-_DEFAULT_MODEL = {
+# burn dollars on a chat-shaped probe. Exposed publicly so the /provider
+# slash-command can pick a sensible default when the user doesn't
+# specify a model explicitly.
+PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "ollama": "gemma4:latest",
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.5-flash",
-}.get(CHAT_PROVIDER, "gemma4:latest")
-CHAT_MODEL = os.environ.get("CHAT_MODEL", _DEFAULT_MODEL)
+}
+CHAT_MODEL = os.environ.get(
+    "CHAT_MODEL", PROVIDER_DEFAULT_MODELS.get(CHAT_PROVIDER, "gemma4:latest")
+)
 
 MAX_TOOL_HOPS = int(os.environ.get("MAX_TOOL_HOPS", "50"))
 DEFAULT_ROW_LIMIT = int(os.environ.get("DEFAULT_ROW_LIMIT", "200"))

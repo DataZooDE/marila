@@ -49,13 +49,16 @@ from tables.agent import (
     AgentEvent,
     BUCKET,
     CHAT_MODEL,
+    CHAT_PROVIDER,
     DEFAULT_ROW_LIMIT,
     NAMESPACE,
     OLLAMA_HOST,
+    PROVIDER_DEFAULT_MODELS,
     QueryResult,
     TABLE,
     TablesState,
     execute_pivot_direct,
+    make_chat_client,
     make_duckdb_connection,
     make_ollama_client,
     preflight,
@@ -424,6 +427,9 @@ class TablesChat(App[None]):
         super().__init__()
         self.state = TablesState()
         self.state.reset()
+        # Active chat provider — startup value comes from CHAT_PROVIDER
+        # env, mutable mid-session via the /provider slash command.
+        self.current_provider: str = CHAT_PROVIDER
         self.oc = make_ollama_client()
         self.con = make_duckdb_connection()
         self.history: list[str] = []
@@ -979,6 +985,41 @@ class TablesChat(App[None]):
                     self._chat_note(
                         f"[dim italic]current chat model: {self.state.chat_model}[/dim italic]"
                     )
+            case "/provider":
+                parts_p = arg.strip().split()
+                if not parts_p:
+                    self._chat_note(
+                        f"[dim italic]current: provider=[bold]{self.current_provider}[/bold] · "
+                        f"model=[bold]{self.state.chat_model}[/bold]\n"
+                        f"usage: /provider {{ollama|openai|gemini}} [model]\n"
+                        f"defaults: " + ", ".join(
+                            f"{p}={m}" for p, m in PROVIDER_DEFAULT_MODELS.items()
+                        )
+                        + "\nswitching providers resets the conversation."
+                        + "[/dim italic]"
+                    )
+                    return
+                new_prov = parts_p[0].lower()
+                new_model = parts_p[1] if len(parts_p) > 1 else None
+                try:
+                    new_client = make_chat_client(new_prov)
+                except Exception as e:  # noqa: BLE001
+                    self._chat_note(f"[red]/provider: {e}[/red]")
+                    return
+                self.oc = new_client
+                self.current_provider = new_prov
+                self.state.chat_model = (
+                    new_model
+                    or PROVIDER_DEFAULT_MODELS.get(new_prov, self.state.chat_model)
+                )
+                # Conversation reset — tool_call_ids from the previous
+                # provider would confuse the new one's strict validators.
+                self.action_reset()
+                self._chat_note(
+                    f"[dim cyan]→ provider=[bold]{new_prov}[/bold]  "
+                    f"model=[bold]{self.state.chat_model}[/bold]  "
+                    f"(conversation reset)[/dim cyan]"
+                )
             case "/sql":
                 if not arg.strip():
                     self._chat_note("[red]usage: /sql SELECT ... FROM lake.nyc.yellow[/red]")
@@ -1016,26 +1057,32 @@ class TablesChat(App[None]):
                 try:
                     s = tool_schema_lookup(self.con)
                     self._chat_note(
-                        f"\n[bold]Columns:[/bold] {len(s['columns'])} · "
-                        f"[bold]Dims:[/bold] {len(s['dimensions'])} · "
-                        f"[bold]Measures:[/bold] {len(s['measures'])}"
+                        f"\n[bold]View:[/bold] {s['view_to_query']}  "
+                        f"[bold]Columns:[/bold] {len(s['view_columns'])} · "
+                        f"[bold]Dims:[/bold] {len(s['dimension_names'])} · "
+                        f"[bold]Measures:[/bold] {len(s['measure_names'])}"
                     )
-                    for c in s["columns"]:
-                        self._chat_note(f"  • {c['name']}  [dim]{c['type']}[/dim]")
+                    for name, type_ in s["view_columns"].items():
+                        self._chat_note(f"  • {name}  [dim]{type_}[/dim]")
                 except Exception as e:  # noqa: BLE001
                     self._chat_note(f"[red]schema: {e}[/red]")
             case "/help":
                 self._chat_note(
                     "[dim]"
-                    "  /reset        clear conversation\n"
-                    "  /clear        clear the chat pane (history kept)\n"
-                    "  /sql SELECT…  raw SQL escape hatch\n"
-                    "  /schema       dump column list\n"
-                    "  /model X      switch chat model (must support tools)\n"
-                    "  /quit         exit\n"
+                    "  /reset           clear conversation\n"
+                    "  /clear           clear the chat pane (history kept)\n"
+                    "  /sql SELECT…     raw SQL escape hatch\n"
+                    "  /schema          dump column list\n"
+                    "  /model X         switch chat model (must support tools)\n"
+                    "  /provider P [M]  switch provider (ollama|openai|gemini), "
+                    "optionally also model — resets conversation\n"
+                    "  /show N          open query N's full result in modal\n"
+                    "  /use N           load query N's pivot args into controls\n"
+                    "  /quit            exit\n"
                     "Keys: ↑/↓ history · F2/F3/F4 focus input/chat/controls · "
-                    "F5 run pivot · F6-F9 resize · p preview · ctrl+r reset · "
-                    "ctrl+l clear · ctrl+c quit"
+                    "F5 run pivot · F6-F9 resize · 1-9 preview · "
+                    "alt+1..9 load query into controls · "
+                    "ctrl+r reset · ctrl+l clear · ctrl+c quit"
                     "[/dim]"
                 )
             case _:
