@@ -35,12 +35,12 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    ListItem,
+    ListView,
     RichLog,
     Select,
-    SelectionList,
     Static,
 )
-from textual.widgets.selection_list import Selection
 
 from shared.tui_widgets import Splitter
 from shared.pivot_sql import DIMENSIONS, MEASURES, build_pivot_sql
@@ -297,14 +297,16 @@ class TablesChat(App[None]):
     #controls-form Static {
         margin-top: 1;
     }
-    #controls-form Select, #controls-form SelectionList {
+    #controls-form Select, #controls-form ListView {
         margin-bottom: 0;
     }
-    #controls-form SelectionList {
-        /* Cap at ~6 visible rows so the controls pane isn't dominated
-           by a huge list. SelectionList scrolls internally. */
-        height: 7;
+    #dim-list {
+        height: 11;
         border: round $primary;
+    }
+    #rows-list, #cols-list {
+        height: 5;
+        border: round $accent 50%;
     }
     #where-input {
         margin-top: 1;
@@ -354,6 +356,11 @@ class TablesChat(App[None]):
         self.history: list[str] = []
         self.history_idx: int = 0
         self.input_draft: str = ""
+        # Pivot-controls state: ordered lists, mutated by r/c/d/J/K key
+        # handlers. The order is the SQL row/col order, which becomes
+        # the hierarchy depth.
+        self.rows_order: list[str] = ["hour_of_day"]
+        self.cols_order: list[str] = []
 
     # ----- layout -----
 
@@ -401,30 +408,32 @@ class TablesChat(App[None]):
                 )
                 with Vertical(id="controls-pane"):
                     yield Static(
-                        "pivot controls  (F4 focus · space toggle · F5 run)",
+                        "pivot controls  (F4 focus · F5 run)",
                         classes="pane-title",
                     )
                     meas_opts = [(m.name, m.name) for m in MEASURES.values()]
-                    # SelectionList[T] takes Selection(prompt, value,
-                    # initial_state). Default rows = hour_of_day,
-                    # default cols = nothing checked.
-                    rows_selections = [
-                        Selection(d.name, d.name, d.name == "hour_of_day")
-                        for d in DIMENSIONS.values()
-                    ]
-                    cols_selections = [
-                        Selection(d.name, d.name, False)
-                        for d in DIMENSIONS.values()
-                    ]
                     with Vertical(id="controls-form"):
-                        yield Static("rows (1+):", classes="hint")
-                        yield SelectionList[str](
-                            *rows_selections, id="sel-rows"
+                        yield Static(
+                            "all dimensions  [r] add to rows · [c] add to cols",
+                            classes="hint",
                         )
-                        yield Static("cols (0+, cross-product spread):", classes="hint")
-                        yield SelectionList[str](
-                            *cols_selections, id="sel-cols"
+                        yield ListView(
+                            *[
+                                ListItem(Label(d.name), name=d.name)
+                                for d in DIMENSIONS.values()
+                            ],
+                            id="dim-list",
                         )
+                        yield Static(
+                            "rows  [j/k] nav · [J/K] reorder · [d/del] remove",
+                            classes="hint",
+                        )
+                        yield ListView(id="rows-list")
+                        yield Static(
+                            "cols  [j/k] nav · [J/K] reorder · [d/del] remove",
+                            classes="hint",
+                        )
+                        yield ListView(id="cols-list")
                         yield Static("measure:", classes="hint")
                         yield Select(
                             options=meas_opts,
@@ -464,7 +473,56 @@ class TablesChat(App[None]):
                 f"[dim]Run `bash demo/tables/load.sh` first.[/dim]"
             )
 
+        self._refresh_pivot_lists()
         self.query_one("#question", Input).focus()
+
+    # ----- pivot-controls helpers -----
+
+    def _refresh_pivot_lists(self) -> None:
+        """Rebuild #rows-list and #cols-list to mirror the current
+        `self.rows_order` / `self.cols_order`. Numbers each entry so
+        the hierarchy depth is visually obvious."""
+        for which, order in (("rows", self.rows_order), ("cols", self.cols_order)):
+            lv = self.query_one(f"#{which}-list", ListView)
+            current_idx = lv.index if lv.index is not None else 0
+            lv.clear()
+            for i, name in enumerate(order, start=1):
+                lv.append(ListItem(Label(f"{i}. {name}"), name=name))
+            if order:
+                # Try to preserve highlight position.
+                lv.index = min(current_idx, len(order) - 1)
+
+    def _add_to_rows(self, name: str) -> None:
+        if name in self.cols_order:
+            self._chat_note(f"[yellow]{name!r} is already in cols — remove it first[/yellow]")
+            return
+        if name not in self.rows_order:
+            self.rows_order.append(name)
+            self._refresh_pivot_lists()
+
+    def _add_to_cols(self, name: str) -> None:
+        if name in self.rows_order:
+            self._chat_note(f"[yellow]{name!r} is already in rows — remove it first[/yellow]")
+            return
+        if name not in self.cols_order:
+            self.cols_order.append(name)
+            self._refresh_pivot_lists()
+
+    def _remove_from(self, which: str, idx: int) -> None:
+        order = self.rows_order if which == "rows" else self.cols_order
+        if 0 <= idx < len(order):
+            del order[idx]
+            self._refresh_pivot_lists()
+
+    def _reorder_within(self, which: str, idx: int, delta: int) -> None:
+        order = self.rows_order if which == "rows" else self.cols_order
+        new = idx + delta
+        if not (0 <= idx < len(order) and 0 <= new < len(order)):
+            return
+        order[idx], order[new] = order[new], order[idx]
+        self._refresh_pivot_lists()
+        lv = self.query_one(f"#{which}-list", ListView)
+        lv.index = new
 
     # ----- bindings -----
 
@@ -487,7 +545,7 @@ class TablesChat(App[None]):
         chat.focus()
 
     def action_focus_controls(self) -> None:
-        self.query_one("#sel-rows", SelectionList).focus()
+        self.query_one("#dim-list", ListView).focus()
 
     def action_shrink_chat(self) -> None:
         self.chat_width_pct = max(self.CHAT_WIDTH_MIN, self.chat_width_pct - 5)
@@ -566,13 +624,14 @@ class TablesChat(App[None]):
         if self.busy:
             self._chat_note("[yellow]busy[/yellow]")
             return
-        rows = list(self.query_one("#sel-rows", SelectionList).selected)
-        cols = list(self.query_one("#sel-cols", SelectionList).selected)
+        rows = list(self.rows_order)
+        cols = list(self.cols_order)
         measure = self.query_one("#sel-measure", Select).value
         where = (self.query_one("#where-input", Input).value or "").strip() or None
         if not rows:
             self._chat_note(
-                "[red]pick at least one row dimension (space to toggle in the rows list)[/red]"
+                "[red]pick at least one row dimension "
+                "(F4 → highlight a dim → press `r` to add to rows)[/red]"
             )
             return
         self.busy = True
@@ -759,9 +818,16 @@ class TablesChat(App[None]):
         except Exception as e:  # noqa: BLE001
             self.post_message(AgentError(str(e)))
 
-    # ----- key routing: input-history nav, then `p` preview -----
+    # ----- key routing -----
+    #
+    # Three modes:
+    #   1) `#question` input focused → ↑/↓ cycle input history
+    #   2) `#dim-list` / `#rows-list` / `#cols-list` focused → vim nav
+    #      + r/c add + J/K reorder + d/del remove
+    #   3) `#verbose-log` focused → `p` opens latest-query preview
 
     async def on_key(self, event) -> None:  # type: ignore[override]
+        # ----- input history (mode 1) -----
         try:
             inp = self.query_one("#question", Input)
         except Exception:  # noqa: BLE001
@@ -793,13 +859,70 @@ class TablesChat(App[None]):
                 event.prevent_default()
                 event.stop()
                 return
-        # 'p' on verbose-log focus opens the most-recent query's detail
+
+        # ----- pivot-controls lists (mode 2) -----
+        focus = self.focused
+        focus_id = focus.id if focus else None
+        if focus_id in ("dim-list", "rows-list", "cols-list") and isinstance(focus, ListView):
+            handled = self._handle_controls_key(focus, focus_id, event)
+            if handled:
+                event.prevent_default()
+                event.stop()
+                return
+
+        # ----- preview (mode 3) -----
         if event.key == "p":
-            verbose = self.query_one("#verbose-log", RichLog)
-            if self.focused is verbose and self.state.last_queries:
+            try:
+                verbose = self.query_one("#verbose-log", RichLog)
+            except Exception:  # noqa: BLE001
+                verbose = None
+            if verbose is not None and self.focused is verbose and self.state.last_queries:
                 self.push_screen(QueryDetail(self.state.last_queries[-1]))
                 event.prevent_default()
                 event.stop()
+
+    def _handle_controls_key(self, lv: ListView, lv_id: str, event) -> bool:
+        """Returns True if the key was consumed."""
+        key = event.key
+        # Vim navigation — map j/k to ↓/↑ regardless of which list is focused.
+        if key == "j":
+            lv.action_cursor_down()
+            return True
+        if key == "k":
+            lv.action_cursor_up()
+            return True
+
+        # All-dims list: r → rows, c → cols
+        if lv_id == "dim-list":
+            if key in ("r", "c"):
+                if lv.index is None or lv.index < 0:
+                    return True
+                item = lv.children[lv.index]
+                name = getattr(item, "name", None)
+                if not name:
+                    return True
+                if key == "r":
+                    self._add_to_rows(name)
+                else:
+                    self._add_to_cols(name)
+                return True
+            return False
+
+        # rows-list / cols-list: d/del remove, J/K reorder
+        which = "rows" if lv_id == "rows-list" else "cols"
+        if key in ("d", "delete"):
+            if lv.index is not None and lv.index >= 0:
+                self._remove_from(which, lv.index)
+            return True
+        if key == "J":  # shift+j → move down
+            if lv.index is not None:
+                self._reorder_within(which, lv.index, +1)
+            return True
+        if key == "K":  # shift+k → move up
+            if lv.index is not None:
+                self._reorder_within(which, lv.index, -1)
+            return True
+        return False
 
 
 def main() -> int:
