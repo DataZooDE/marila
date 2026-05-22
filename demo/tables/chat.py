@@ -196,7 +196,12 @@ def _try_infer_pivot_from_result(
     return (list(maybe_dims), [], maybe_measure)
 
 
-def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
+def _render_result_table(
+    r: QueryResult,
+    *,
+    max_rows: int = 200,
+    max_cols: Optional[int] = None,
+) -> RichTable:
     """Render a QueryResult.
 
     If `row_dim_names` is set (pivot path), fold the N row-dim columns
@@ -206,6 +211,11 @@ def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
 
     If `row_dim_names` is empty (raw `/sql` or schema lookup), fall
     back to a flat one-column-per-result-column render.
+
+    `max_cols` caps the visible columns and adds a "+N more" stub on
+    each row. Wide pivots (e.g. day_of_week × hour_of_day = 168 spread
+    cols) otherwise collapse to a hatch pattern when squeezed into the
+    chat-pane width.
     """
     title = (
         f"{r.row_count} row{'s' if r.row_count != 1 else ''} "
@@ -214,13 +224,29 @@ def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
 
     # ── Flat path: no hierarchy info ──
     if not r.row_dim_names:
+        cols_to_show = list(r.columns)
+        n_dropped = 0
+        if max_cols is not None and len(cols_to_show) > max_cols:
+            cols_to_show = cols_to_show[: max(1, max_cols - 1)]
+            n_dropped = len(r.columns) - len(cols_to_show)
         t = RichTable(title=title, show_header=True, header_style="bold cyan")
-        for c in r.columns:
+        for c in cols_to_show:
             t.add_column(str(c), justify="right")
+        if n_dropped > 0:
+            t.add_column(f"+{n_dropped} more")
+        keep = len(cols_to_show)
         for row in r.rows[:max_rows]:
-            t.add_row(*[_fmt_value(v) for v in row])
+            cells = [_fmt_value(v) for v in row[:keep]]
+            if n_dropped > 0:
+                cells.append("…")
+            t.add_row(*cells)
+        caps = []
         if r.row_count > max_rows:
-            t.caption = f"showing first {max_rows} of {r.row_count}"
+            caps.append(f"first {max_rows} of {r.row_count} rows")
+        if n_dropped > 0:
+            caps.append(f"first {keep} of {len(r.columns)} cols")
+        if caps:
+            t.caption = "showing " + ", ".join(caps)
         return t
 
     # ── Hierarchical path: pivot with rollup ──
@@ -240,6 +266,7 @@ def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
                 error=r.error,
             ),
             max_rows=max_rows,
+            max_cols=max_cols,
         )
     hidden_for_display = set(g_idx)  # never show GROUPING flags
     measure_idx = [
@@ -248,12 +275,24 @@ def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
     ]
     measure_names = [r.columns[i] for i in measure_idx]
 
+    # Cap the SPREAD (measure) columns; never drop dim columns, since
+    # they carry the hierarchy labels.
+    spread_dropped = 0
+    if max_cols is not None:
+        budget = max(2, max_cols - n)  # leave room for at least 2 measures
+        if len(measure_idx) > budget:
+            spread_dropped = len(measure_idx) - (budget - 1)  # save 1 col for the +N stub
+            measure_idx = measure_idx[: budget - 1]
+            measure_names = measure_names[: budget - 1]
+
     t = RichTable(title=title, show_header=True, header_style="bold cyan")
     # One column per row dim — clear, unambiguous.
     for name in r.row_dim_names:
         t.add_column(name, no_wrap=True)
     for name in measure_names:
         t.add_column(name, justify="right")
+    if spread_dropped > 0:
+        t.add_column(f"+{spread_dropped} more")
 
     for row in r.rows[:max_rows]:
         g_flags = [row[i] for i in g_idx]
@@ -280,10 +319,17 @@ def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
             style = None
 
         measure_cells = [_fmt_value(row[i]) for i in measure_idx]
+        if spread_dropped > 0:
+            measure_cells.append("…")
         t.add_row(*dim_cells, *measure_cells, style=style)
 
+    caps = []
     if r.row_count > max_rows:
-        t.caption = f"showing first {max_rows} of {r.row_count}"
+        caps.append(f"first {max_rows} of {r.row_count} rows")
+    if spread_dropped > 0:
+        caps.append(f"first {len(measure_idx)} of {len(measure_idx) + spread_dropped} measure cols")
+    if caps:
+        t.caption = "showing " + ", ".join(caps)
     return t
 
 
@@ -882,7 +928,7 @@ class TablesChat(App[None]):
                 elif q.row_count == 0:
                     chat.write("  [dim](no rows)[/dim]")
                 else:
-                    chat.write(_render_result_table(q, max_rows=8))
+                    chat.write(_render_result_table(q, max_rows=8, max_cols=10))
             digits = ", ".join(str(i) for i in range(1, min(10, len(msg.queries) + 1)))
             chat.write(
                 f"[dim]F3+{{digit}} preview · alt+{{digit}} load into "
