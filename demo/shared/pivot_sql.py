@@ -22,7 +22,7 @@ the model into the SQL planner.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -153,94 +153,126 @@ MEASURES: Mapping[str, Measure] = {
 # ---------------------------------------------------------------------------
 
 
+def coerce_dim_list(x: Any) -> list[str]:
+    """Accept whatever the caller passed and produce a flat list of
+    dimension names. Tolerant of the LLM passing a single string
+    instead of an array — common with smaller tool-use models."""
+    if x is None:
+        return []
+    if isinstance(x, str):
+        return [s.strip() for s in x.split(",") if s.strip()]
+    return [str(s).strip() for s in x if str(s).strip()]
+
+
 def build_pivot_sql(
-    rows: str,
-    cols: Optional[str],
+    rows: list[str] | str,
+    cols: list[str] | str | None,
     measure: str,
     where: Optional[str] = None,
     *,
     table: str = "lake.nyc.yellow",
     row_limit: int = 200,
 ) -> str:
-    """Assemble a single-statement SQL pivot.
+    """Assemble a single-statement SQL pivot with arbitrary numbers of
+    row + column dimensions.
 
-    - `rows`: dimension name (must be a key of `DIMENSIONS`).
-    - `cols`: dimension name or None. None ⇒ no pivot, just a GROUP BY rows.
+    - `rows`: list of dimension names (or comma-separated string). At least one.
+    - `cols`: list of dimension names (or comma-separated string), or None /
+      empty list for "no pivot, just GROUP BY rows".
     - `measure`: measure name (key of `MEASURES`).
-    - `where`: optional free-text WHERE clause (must not include the word "WHERE";
-      the builder injects it). Passed through unmodified — caller / DuckDB's
-      parser is the validator.
-    - `table`: fully-qualified table reference (default `lake.nyc.yellow`).
-    - `row_limit`: hard LIMIT on the outer query so the TUI doesn't try to
-      render a 200k-row pivot.
+    - `where`: optional free-text WHERE body. Passed through verbatim.
+    - `row_limit`: hard LIMIT on the outer query.
 
-    For 1-dim (no `cols`) the result is:
+    Shapes:
 
-        SELECT <rows-expr> AS <rows>, <measure-expr> AS <measure>
-          FROM <table> [WHERE <where>]
-         GROUP BY 1
-         ORDER BY <measure> DESC
-         LIMIT <row_limit>;
+      cols == [] / None  →  plain GROUP BY:
+        SELECT r1-expr AS r1, …, rN-expr AS rN, measure-expr AS measure
+          FROM table [WHERE …]
+         GROUP BY 1, …, N
+         ORDER BY <last column>
+         LIMIT N;
 
-    For 2-dim (with `cols`) we use DuckDB's PIVOT syntax (1.5.x):
-
+      cols == [c1, …, cM]  →  DuckDB PIVOT with multi-column ON:
         PIVOT (
-          SELECT <rows-expr> AS <rows>, <cols-expr> AS <cols>, <measure-expr> AS <measure>
-            FROM <table> [WHERE <where>]
-        )
-        ON <cols> USING FIRST(<measure>)
-        GROUP BY <rows>
-        ORDER BY <rows>
-        LIMIT <row_limit>;
+          SELECT r1, …, rN, c1, …, cM, measure
+            FROM table [WHERE …]
+           GROUP BY 1, …, N+M
+        ) ON c1, …, cM USING FIRST(measure)
+        GROUP BY r1, …, rN
+        ORDER BY r1, …, rN
+        LIMIT N;
+
+    Multi-column `ON` is DuckDB's native cross-product spread: the
+    output has one column per distinct (c1-val, c2-val, …) tuple.
     """
-    if rows not in DIMENSIONS:
+    rows_list = coerce_dim_list(rows)
+    cols_list = coerce_dim_list(cols)
+    if not rows_list:
+        raise ValueError("at least one row dimension required")
+    unknown_rows = [r for r in rows_list if r not in DIMENSIONS]
+    if unknown_rows:
         raise ValueError(
-            f"unknown row dimension {rows!r} — pick one of {sorted(DIMENSIONS)}"
+            f"unknown row dimension(s) {unknown_rows} — pick from {sorted(DIMENSIONS)}"
+        )
+    unknown_cols = [c for c in cols_list if c not in DIMENSIONS]
+    if unknown_cols:
+        raise ValueError(
+            f"unknown col dimension(s) {unknown_cols} — pick from {sorted(DIMENSIONS)}"
+        )
+    overlap = set(rows_list) & set(cols_list)
+    if overlap:
+        raise ValueError(
+            f"dimension(s) {sorted(overlap)} appear in both rows and cols"
         )
     if measure not in MEASURES:
         raise ValueError(
             f"unknown measure {measure!r} — pick one of {sorted(MEASURES)}"
         )
-    if cols is not None and cols not in DIMENSIONS:
-        raise ValueError(
-            f"unknown column dimension {cols!r} — pick one of {sorted(DIMENSIONS)}"
-        )
+    # Dedupe within each list while preserving order.
+    seen: set[str] = set()
+    rows_list = [r for r in rows_list if not (r in seen or seen.add(r))]
+    seen = set()
+    cols_list = [c for c in cols_list if not (c in seen or seen.add(c))]
 
-    rd = DIMENSIONS[rows]
+    row_dims = [DIMENSIONS[r] for r in rows_list]
+    col_dims = [DIMENSIONS[c] for c in cols_list]
     md = MEASURES[measure]
     where_clause = f"WHERE {where}" if where and where.strip() else ""
+    row_selects = ", ".join(f"{d.sql_expr} AS {d.name}" for d in row_dims)
+    row_names = ", ".join(d.name for d in row_dims)
 
-    if cols is None:
+    # ── No pivot: plain GROUP BY ──
+    if not col_dims:
+        positions = ", ".join(str(i + 1) for i in range(len(row_dims)))
+        # 1-dim: sort by the measure descending (best leaderboard UX).
+        # N-dim: sort by row dimensions in declared order (predictable).
+        order_clause = (
+            f"ORDER BY {md.name} DESC" if len(row_dims) == 1 else f"ORDER BY {row_names}"
+        )
         return (
-            f"SELECT {rd.sql_expr} AS {rd.name}, "
-            f"{md.sql_expr} AS {md.name} "
+            f"SELECT {row_selects}, {md.sql_expr} AS {md.name} "
             f"FROM {table} {where_clause} "
-            f"GROUP BY 1 "
-            f"ORDER BY {md.name} DESC "
+            f"GROUP BY {positions} "
+            f"{order_clause} "
             f"LIMIT {row_limit}"
         ).replace("  ", " ").strip()
 
-    cd = DIMENSIONS[cols]
-    # The inner SELECT must GROUP BY both dimensions, otherwise
-    # putting the aggregate measure (`COUNT(*)`, `AVG(fare_amount)`,
-    # etc.) alongside the un-aggregated row/col dims is a binder error:
-    #   "column X must appear in the GROUP BY clause or be part of an
-    #    aggregate function".
-    # After this pre-aggregation each (rows, cols) pair has exactly
-    # one row, so the outer PIVOT's `USING FIRST(measure)` just lifts
-    # that single value into the spread.
+    # ── PIVOT: multi-column ON spread ──
+    col_selects = ", ".join(f"{d.sql_expr} AS {d.name}" for d in col_dims)
+    col_names = ", ".join(d.name for d in col_dims)
+    inner_positions = ", ".join(
+        str(i + 1) for i in range(len(row_dims) + len(col_dims))
+    )
     return (
         f"PIVOT ("
-        f"SELECT {rd.sql_expr} AS {rd.name}, "
-        f"{cd.sql_expr} AS {cd.name}, "
-        f"{md.sql_expr} AS {md.name} "
+        f"SELECT {row_selects}, {col_selects}, {md.sql_expr} AS {md.name} "
         f"FROM {table} {where_clause} "
-        f"GROUP BY 1, 2"
+        f"GROUP BY {inner_positions}"
         f") "
-        f"ON {cd.name} "
+        f"ON {col_names} "
         f"USING FIRST({md.name}) "
-        f"GROUP BY {rd.name} "
-        f"ORDER BY {rd.name} "
+        f"GROUP BY {row_names} "
+        f"ORDER BY {row_names} "
         f"LIMIT {row_limit}"
     ).replace("  ", " ").strip()
 

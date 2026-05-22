@@ -37,8 +37,10 @@ from textual.widgets import (
     Label,
     RichLog,
     Select,
+    SelectionList,
     Static,
 )
+from textual.widgets.selection_list import Selection
 
 from shared.tui_widgets import Splitter
 from shared.pivot_sql import DIMENSIONS, MEASURES, build_pivot_sql
@@ -206,8 +208,14 @@ class TablesChat(App[None]):
     #controls-form Static {
         margin-top: 1;
     }
-    #controls-form Select {
+    #controls-form Select, #controls-form SelectionList {
         margin-bottom: 0;
+    }
+    #controls-form SelectionList {
+        /* Cap at ~6 visible rows so the controls pane isn't dominated
+           by a huge list. SelectionList scrolls internally. */
+        height: 7;
+        border: round $primary;
     }
     #where-input {
         margin-top: 1;
@@ -304,25 +312,29 @@ class TablesChat(App[None]):
                 )
                 with Vertical(id="controls-pane"):
                     yield Static(
-                        "pivot controls  (F4 focus · F5 run)",
+                        "pivot controls  (F4 focus · space toggle · F5 run)",
                         classes="pane-title",
                     )
-                    dim_opts = [(d.name, d.name) for d in DIMENSIONS.values()]
                     meas_opts = [(m.name, m.name) for m in MEASURES.values()]
+                    # SelectionList[T] takes Selection(prompt, value,
+                    # initial_state). Default rows = hour_of_day,
+                    # default cols = nothing checked.
+                    rows_selections = [
+                        Selection(d.name, d.name, d.name == "hour_of_day")
+                        for d in DIMENSIONS.values()
+                    ]
+                    cols_selections = [
+                        Selection(d.name, d.name, False)
+                        for d in DIMENSIONS.values()
+                    ]
                     with Vertical(id="controls-form"):
-                        yield Static("rows:", classes="hint")
-                        yield Select(
-                            options=dim_opts,
-                            value="hour_of_day",
-                            allow_blank=False,
-                            id="sel-rows",
+                        yield Static("rows (1+):", classes="hint")
+                        yield SelectionList[str](
+                            *rows_selections, id="sel-rows"
                         )
-                        yield Static("cols (optional):", classes="hint")
-                        yield Select(
-                            options=[("(none)", "__none__")] + dim_opts,
-                            value="__none__",
-                            allow_blank=False,
-                            id="sel-cols",
+                        yield Static("cols (0+, cross-product spread):", classes="hint")
+                        yield SelectionList[str](
+                            *cols_selections, id="sel-cols"
                         )
                         yield Static("measure:", classes="hint")
                         yield Select(
@@ -386,7 +398,7 @@ class TablesChat(App[None]):
         chat.focus()
 
     def action_focus_controls(self) -> None:
-        self.query_one("#sel-rows", Select).focus()
+        self.query_one("#sel-rows", SelectionList).focus()
 
     def action_shrink_chat(self) -> None:
         self.chat_width_pct = max(self.CHAT_WIDTH_MIN, self.chat_width_pct - 5)
@@ -465,23 +477,30 @@ class TablesChat(App[None]):
         if self.busy:
             self._chat_note("[yellow]busy[/yellow]")
             return
-        rows = self.query_one("#sel-rows", Select).value
-        cols_raw = self.query_one("#sel-cols", Select).value
+        rows = list(self.query_one("#sel-rows", SelectionList).selected)
+        cols = list(self.query_one("#sel-cols", SelectionList).selected)
         measure = self.query_one("#sel-measure", Select).value
         where = (self.query_one("#where-input", Input).value or "").strip() or None
-        cols = None if cols_raw == "__none__" else str(cols_raw)
+        if not rows:
+            self._chat_note(
+                "[red]pick at least one row dimension (space to toggle in the rows list)[/red]"
+            )
+            return
         self.busy = True
-        label = f"pivot rows={rows} cols={cols} measure={measure}" + (
-            f" where=({where})" if where else ""
+        rows_label = ",".join(rows)
+        cols_label = ",".join(cols) if cols else "(none)"
+        label = (
+            f"pivot rows=[{rows_label}] cols=[{cols_label}] measure={measure}"
+            + (f" where=({where})" if where else "")
         )
         self._chat_note(f"\n[bold green]you>[/bold green] [dim]({label})[/dim]")
-        self._run_pivot_threaded(str(rows), cols, str(measure), where, label)
+        self._run_pivot_threaded(rows, cols, str(measure), where, label)
 
     @work(thread=True, exclusive=False)
     def _run_pivot_threaded(
         self,
-        rows: str,
-        cols: Optional[str],
+        rows: list[str],
+        cols: list[str],
         measure: str,
         where: Optional[str],
         label: str,

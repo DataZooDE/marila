@@ -35,6 +35,7 @@ from shared.pivot_sql import (
     DIMENSIONS,
     MEASURES,
     build_pivot_sql,
+    coerce_dim_list,
     list_dimensions,
     list_measures,
 )
@@ -124,22 +125,34 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "pivot",
             "description": (
-                "Run a pivot aggregation. Dimensions and measures are "
-                "selected by name; see `schema_lookup` for the catalog. "
-                "Returns rows + the assembled SQL for transparency."
+                "Run a pivot aggregation. Multiple row and column "
+                "dimensions are supported — DuckDB's PIVOT does a "
+                "cross-product spread on the columns and a multi-level "
+                "GROUP BY on the rows. Returns rows + the assembled SQL."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "rows": {
-                        "type": "string",
-                        "description": "Row dimension name (see schema_lookup).",
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "One or more row dimension names (see "
+                            "schema_lookup). Examples: "
+                            "[\"hour_of_day\"], "
+                            "[\"day_of_week\", \"hour_of_day\"]."
+                        ),
+                        "minItems": 1,
                     },
                     "cols": {
-                        "type": "string",
+                        "type": "array",
+                        "items": {"type": "string"},
                         "description": (
-                            "Optional column dimension name. Omit or set "
-                            "to null for a simple 1-dim GROUP BY."
+                            "Zero or more column dimension names. "
+                            "Empty array (or omit) means no pivot, just "
+                            "GROUP BY rows. Multiple cols expand "
+                            "cross-product (e.g. payment_type × vendor_id "
+                            "→ 15 spread columns)."
                         ),
                     },
                     "measure": {
@@ -355,9 +368,9 @@ def tool_schema_lookup(con: duckdb.DuckDBPyConnection) -> dict[str, Any]:
 def tool_pivot(
     con: duckdb.DuckDBPyConnection,
     *,
-    rows: str,
+    rows: list[str] | str,
     measure: str,
-    cols: Optional[str] = None,
+    cols: list[str] | str | None = None,
     where: Optional[str] = None,
     row_limit: int = DEFAULT_ROW_LIMIT,
 ) -> QueryResult:
@@ -534,8 +547,8 @@ def run_turn(
                     }
                 )
             elif name == "pivot":
-                rows = str(args.get("rows") or "")
-                cols = args.get("cols") or None
+                rows = coerce_dim_list(args.get("rows"))
+                cols = coerce_dim_list(args.get("cols"))
                 measure = str(args.get("measure") or "")
                 where = args.get("where") or None
                 emit("sql", tool="pivot", rows=rows, cols=cols, measure=measure, where=where)
@@ -642,8 +655,8 @@ def execute_pivot_direct(
     state: TablesState,
     duckdb_conn: duckdb.DuckDBPyConnection,
     *,
-    rows: str,
-    cols: Optional[str],
+    rows: list[str] | str,
+    cols: list[str] | str | None,
     measure: str,
     where: Optional[str] = None,
 ) -> QueryResult:
