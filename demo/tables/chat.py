@@ -555,6 +555,41 @@ class TablesChat(App[None]):
         lv = self.query_one(f"#{which}-list", ListView)
         lv.index = new
 
+    def _load_query_into_controls(self, idx: int) -> None:
+        """Pull query #idx's pivot args (explicit or inferred) into
+        the controls pane. Lets the user follow up on any of the
+        per-turn queries, not just the latest."""
+        if not (0 <= idx < len(self.current_turn_queries)):
+            self._chat_note(
+                f"[red]no query #{idx + 1} — this turn ran "
+                f"{len(self.current_turn_queries)} queries[/red]"
+            )
+            return
+        q = self.current_turn_queries[idx]
+        if q.measure is not None:
+            self._sync_controls_from_pivot(
+                q.row_dim_names, q.col_dim_names, q.measure, q.where
+            )
+            self._chat_note(
+                f"[dim cyan]→ loaded query [{idx + 1}] (explicit pivot) "
+                f"into controls — F5 to rerun, or edit dims first[/dim cyan]"
+            )
+            return
+        inferred = _try_infer_pivot_from_result(q)
+        if inferred is not None:
+            rows, cols, measure = inferred
+            self._sync_controls_from_pivot(rows, cols, measure, None)
+            self._chat_note(
+                f"[dim cyan]→ loaded query [{idx + 1}] (inferred from "
+                f"run_sql shape) — F5 to rerun as pivot, or edit first[/dim cyan]"
+            )
+            return
+        self._chat_note(
+            f"[yellow]query [{idx + 1}] isn't pivot-shaped — its columns "
+            f"don't all match registered dimensions/measures. Can't "
+            f"load into controls.[/yellow]"
+        )
+
     def _sync_controls_from_pivot(
         self,
         rows: list[str],
@@ -848,10 +883,11 @@ class TablesChat(App[None]):
                     chat.write("  [dim](no rows)[/dim]")
                 else:
                     chat.write(_render_result_table(q, max_rows=8))
+            digits = ", ".join(str(i) for i in range(1, min(10, len(msg.queries) + 1)))
             chat.write(
-                f"[dim]F3 to focus chat, then "
-                f"{', '.join(str(i) for i in range(1, min(10, len(msg.queries) + 1)))} "
-                f"opens the full result · or `/show N` from input[/dim]"
+                f"[dim]F3+{{digit}} preview · alt+{{digit}} load into "
+                f"controls (or `/show N` / `/use N` from input) · "
+                f"available: {digits}[/dim]"
             )
         chat.write(Rule(style="dim"))
 
@@ -920,6 +956,15 @@ class TablesChat(App[None]):
                         f"[red]no query #{idx + 1} — this turn ran "
                         f"{len(self.current_turn_queries)} queries[/red]"
                     )
+            case "/use":
+                if not arg.strip().isdigit():
+                    self._chat_note(
+                        f"[red]usage: /use N  (N = 1..{len(self.current_turn_queries) or 0}) "
+                        f"— loads query N's pivot args into the controls so F5 reruns a variant[/red]"
+                    )
+                    return
+                idx = int(arg.strip()) - 1
+                self._load_query_into_controls(idx)
             case "/schema":
                 from tables.agent import tool_schema_lookup
                 try:
@@ -1035,6 +1080,16 @@ class TablesChat(App[None]):
                     self.push_screen(QueryDetail(self.current_turn_queries[idx]))
                     event.prevent_default()
                     event.stop()
+                    return
+
+        # ----- alt+1..alt+9: load query N's pivot args into the controls -----
+        # Works from any focus (you don't need to focus chat first), so
+        # the human can "follow up on query [N]" without breaking flow.
+        if event.key in {f"alt+{d}" for d in "123456789"}:
+            idx = int(event.key.split("+")[1]) - 1
+            self._load_query_into_controls(idx)
+            event.prevent_default()
+            event.stop()
 
     def _handle_controls_key(self, lv: ListView, lv_id: str, event) -> bool:
         """Returns True if the key was consumed."""
