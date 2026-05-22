@@ -169,6 +169,33 @@ def _fmt_value(v: Any) -> str:
     return str(v)
 
 
+def _try_infer_pivot_from_result(
+    q: QueryResult,
+) -> Optional[tuple[list[str], list[str], str]]:
+    """If a `run_sql` result LOOKS pivot-shaped, back-derive
+    `(rows, cols, measure)` so the controls pane can still sync.
+
+    A column list of the form `[dim1, dim2, …, dimN, measure]` where
+    every dim name is in DIMENSIONS and the trailing column is in
+    MEASURES counts as pivot-shaped. We don't try to infer cols
+    (would need spread detection) — best-effort, returns cols=[].
+    Returns None when the result doesn't fit (CTE projections,
+    custom aliases, etc.) — controls stay where they were.
+    """
+    if q.measure is not None or q.error:
+        return None
+    if not q.columns or len(q.columns) < 2:
+        return None
+    *maybe_dims, maybe_measure = q.columns
+    if not maybe_dims:
+        return None
+    if any(c not in DIMENSIONS for c in maybe_dims):
+        return None
+    if maybe_measure not in MEASURES:
+        return None
+    return (list(maybe_dims), [], maybe_measure)
+
+
 def _render_result_table(r: QueryResult, *, max_rows: int = 200) -> RichTable:
     """Render a QueryResult.
 
@@ -763,16 +790,27 @@ class TablesChat(App[None]):
         chat.write("\n[bold magenta]assistant>[/bold magenta]")
         chat.write(RichMarkdown(msg.text))
 
-        # Sync the controls pane to whatever pivot the LLM ran most
-        # recently, so the human picks up where the LLM left off:
+        # Sync the controls pane to whatever aggregation the LLM ran
+        # most recently, so the human picks up where the LLM left off:
         # change one dim, F5, see the variant. We scan in reverse so
-        # the latest pivot wins. `run_sql` results carry no measure
-        # and are skipped.
+        # the latest match wins.
+        #
+        #   1. Explicit pivot tool call → exact sync.
+        #   2. run_sql with a pivot-shaped column list (N dim cols +
+        #      1 measure col, all names in our registries) → inferred
+        #      sync. F5 reruns it via the pivot path (with rollup),
+        #      which is a slight shape change but keeps the controls
+        #      aligned with what produced the visible table.
         for q in reversed(msg.queries):
             if q.measure is not None:
                 self._sync_controls_from_pivot(
                     q.row_dim_names, q.col_dim_names, q.measure, q.where
                 )
+                break
+            inferred = _try_infer_pivot_from_result(q)
+            if inferred is not None:
+                rows, cols, measure = inferred
+                self._sync_controls_from_pivot(rows, cols, measure, None)
                 break
 
         # Inline trace: every query the agent ran during this turn,
