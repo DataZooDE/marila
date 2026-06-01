@@ -17,13 +17,12 @@ use crate::{
     arn::{parse_bucket_name_from_arn, table_bucket_arn},
     lakekeeper::LakekeeperClient,
     state::{
-        CreateTableBucketInput, CreateTableBucketOutput, ListTableBucketsOutput,
-        TableBucketSummary,
+        CreateTableBucketInput, CreateTableBucketOutput, ListTableBucketsOutput, TableBucketSummary,
     },
 };
 
 /// Message bodies AWS returns on the not-found / duplicate paths
-/// (CLAUDE.md C-9). We match them byte-for-byte.
+/// (doc/GAP_ANALYSIS.md). We match them byte-for-byte.
 pub(crate) const BUCKET_NOT_FOUND_MESSAGE: &str = "The specified bucket does not exist.";
 pub(crate) const BUCKET_ALREADY_EXISTS_MESSAGE: &str =
     "The bucket that you tried to create already exists, and you own it.";
@@ -168,7 +167,7 @@ pub async fn delete_table_bucket(
     })
     .await?;
 
-    // AWS replies HTTP 204 with no body — match exactly (CLAUDE.md C-9).
+    // AWS replies HTTP 204 with no body — match exactly (doc/GAP_ANALYSIS.md).
     Ok(StatusCode::NO_CONTENT)
 }
 

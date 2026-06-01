@@ -236,10 +236,10 @@ fn extract_sheet_text(xml: &[u8], shared: &[String], out: &mut String) -> anyhow
                     .map_err(|e| anyhow::anyhow!("sheet unescape: {e}"))?;
                 match cell_type {
                     CellType::Shared if in_v => {
-                        if let Ok(idx) = s.trim().parse::<usize>() {
-                            if let Some(v) = shared.get(idx) {
-                                cell_buf.push_str(v);
-                            }
+                        if let Ok(idx) = s.trim().parse::<usize>()
+                            && let Some(v) = shared.get(idx)
+                        {
+                            cell_buf.push_str(v);
                         }
                     }
                     CellType::Inline if in_t => cell_buf.push_str(&s),

@@ -4,7 +4,7 @@
 //!
 //! 1. The wire protocol is REST+JSON (verb-and-path routing) rather
 //!    than the all-POST `/<OperationName>` shape s3vectors uses
-//!    (CLAUDE.md C-9).
+//!    (doc/GAP_ANALYSIS.md).
 //! 2. Buckets here are *table buckets* — analogues of Lakekeeper
 //!    warehouses, separate state schema from vector buckets.
 //!

@@ -45,8 +45,7 @@ impl Chunker for MarkdownChunker {
                 }
                 path_stack.push((s.level, s.title.clone()));
             }
-            let section_path: Vec<String> =
-                path_stack.iter().map(|(_, t)| t.clone()).collect();
+            let section_path: Vec<String> = path_stack.iter().map(|(_, t)| t.clone()).collect();
 
             let body = &doc.text[region.start..region.end];
             let body = body.trim();
@@ -142,20 +141,25 @@ mod tests {
 
     #[test]
     fn chunks_inherit_section_path() {
-        let doc = parse(
-            "# Top\n\nintro\n\n## Sub A\n\nbody A\n\n## Sub B\n\nbody B\n",
-        );
+        let doc = parse("# Top\n\nintro\n\n## Sub A\n\nbody A\n\n## Sub B\n\nbody B\n");
         let chunks = MarkdownChunker {
-            cfg: ChunkConfig { size: 1000, overlap: 0 },
+            cfg: ChunkConfig {
+                size: 1000,
+                overlap: 0,
+            },
         }
         .chunk(&doc);
         assert!(chunks.iter().any(|c| c.section_path == vec!["Top"]));
-        assert!(chunks
-            .iter()
-            .any(|c| c.section_path == vec!["Top", "Sub A"]));
-        assert!(chunks
-            .iter()
-            .any(|c| c.section_path == vec!["Top", "Sub B"]));
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.section_path == vec!["Top", "Sub A"])
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.section_path == vec!["Top", "Sub B"])
+        );
     }
 
     #[test]
@@ -164,13 +168,20 @@ mod tests {
         let md = format!("# T\n\n## S\n\n{big}");
         let doc = parse(&md);
         let chunks = MarkdownChunker {
-            cfg: ChunkConfig { size: 50, overlap: 10 },
+            cfg: ChunkConfig {
+                size: 50,
+                overlap: 10,
+            },
         }
         .chunk(&doc);
         let s_chunks: Vec<_> = chunks
             .iter()
             .filter(|c| c.section_path == vec!["T", "S"])
             .collect();
-        assert!(s_chunks.len() > 1, "got {} chunks under T>S", s_chunks.len());
+        assert!(
+            s_chunks.len() > 1,
+            "got {} chunks under T>S",
+            s_chunks.len()
+        );
     }
 }

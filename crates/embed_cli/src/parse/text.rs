@@ -11,7 +11,9 @@ impl Parser for TextParser {
         "text"
     }
     fn extensions(&self) -> &[&str] {
-        &["txt", "text", "log", "rst", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml"]
+        &[
+            "txt", "text", "log", "rst", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml",
+        ]
     }
     fn parse(&self, raw: RawDoc) -> anyhow::Result<ParsedDoc> {
         let text = String::from_utf8_lossy(&raw.bytes).into_owned();

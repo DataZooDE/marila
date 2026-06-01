@@ -87,10 +87,10 @@ impl Checkpoint {
             debug!(checkpoint = %path.display(), entries = done.len(), "loaded checkpoint");
         }
 
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent).await.ok();
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await.ok();
         }
         let file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -146,13 +146,15 @@ impl Checkpoint {
             if entry.sealed && entry.actual >= entry.expected && !entry.written {
                 entry.written = true;
                 write_done = true;
-                payload = Some((source.to_string(), entry.expected, entry.content_hash.clone()));
+                payload = Some((
+                    source.to_string(),
+                    entry.expected,
+                    entry.content_hash.clone(),
+                ));
             }
         }
-        if write_done {
-            if let Some((s, expected, hash)) = payload {
-                self.append_done(&s, expected, &hash).await;
-            }
+        if write_done && let Some((s, expected, hash)) = payload {
+            self.append_done(&s, expected, &hash).await;
         }
     }
 

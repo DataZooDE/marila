@@ -17,6 +17,9 @@ edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
 publish = false
+repository = "https://github.com/datazoo/marila"
+homepage = "https://github.com/datazoo/marila"
+documentation = "https://github.com/datazoo/marila#readme"
 
 [workspace.dependencies]
 # Internal crates
@@ -49,10 +52,9 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Storage backends
-# `duckdb` without the `bundled` feature links to system libduckdb
-# (Arch package `duckdb` ships /usr/include/duckdb.h + /usr/lib/libduckdb.so).
-# See CLAUDE.md C-3.
-duckdb = { version = "1.10502", features = ["chrono"] }
+# Bundle DuckDB so a clean checkout does not depend on distro-specific
+# libduckdb packages in CI or local development.
+duckdb = { version = "1.10502", features = ["bundled", "chrono"] }
 aws-config = { version = "1", features = ["behavior-version-latest", "credentials-login", "sso"] }
 aws-sdk-s3 = "1"
 aws-credential-types = "1"
@@ -86,4 +88,3 @@ tiktoken-rs = "0.7"
 [profile.dev]
 debug = 1            # smaller binary, faster link; full backtraces still work
 incremental = true
-

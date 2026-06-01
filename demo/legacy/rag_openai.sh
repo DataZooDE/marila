@@ -4,7 +4,7 @@
 # driven entirely by the in-tree marila-embed CLI.
 #
 # Workflow:
-#   1. marila-embed put — walks doc/, README.md, CLAUDE.md; markdown-aware
+#   1. marila-embed put — walks doc/, README.md, doc/DISCOVERIES.md; markdown-aware
 #      chunking; embeds via OpenAI text-embedding-3-small; writes the
 #      vectors into the auto-created index with the S3VECTORS-EMBED-*
 #      metadata envelope (plus marila.section_path on every markdown chunk).
@@ -49,7 +49,7 @@ echo "==> put marila docs into $BUCKET/$INDEX"
     --chunk-size 400 \
     --chunk-overlap 80 \
     --text README.md \
-    --text CLAUDE.md \
+    --text doc/DISCOVERIES.md \
     --text "doc/*.md"
 
 echo

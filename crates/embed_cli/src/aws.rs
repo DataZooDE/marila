@@ -23,9 +23,7 @@ pub async fn vectors_client(common: &CommonArgs) -> VectorsClient {
         // Same recipe as the integration-test harness so the wire shape
         // matches exactly.
         let creds = Credentials::new("marila", "marilasecret", None, None, "marila-embed");
-        builder = builder
-            .credentials_provider(creds)
-            .endpoint_url(endpoint);
+        builder = builder.credentials_provider(creds).endpoint_url(endpoint);
     } else if !endpoint.contains(".amazonaws.com") {
         // Custom endpoint that isn't localhost — still override, but use
         // the standard credential chain.

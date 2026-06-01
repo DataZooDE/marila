@@ -55,7 +55,14 @@ impl Parser for PptxParser {
         })?;
         let mut sorted = entries.clone();
         sorted.sort();
-        let mut text = extract_text_from_zip(&raw, sorted.iter().map(|s| s.as_str()).collect::<Vec<_>>().as_slice())?;
+        let mut text = extract_text_from_zip(
+            &raw,
+            sorted
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )?;
         if text.is_empty() {
             text = String::new();
         }
@@ -114,8 +121,8 @@ impl Parser for OdpParser {
 /// nodes with single spaces. Missing entries log a WARN and contribute
 /// nothing — see module docstring for the robustness contract.
 fn extract_text_from_zip(raw: &RawDoc, entries: &[&str]) -> anyhow::Result<String> {
-    let mut zip = ZipArchive::new(Cursor::new(&raw.bytes))
-        .map_err(|e| anyhow::anyhow!("open zip: {e}"))?;
+    let mut zip =
+        ZipArchive::new(Cursor::new(&raw.bytes)).map_err(|e| anyhow::anyhow!("open zip: {e}"))?;
     let mut acc = String::new();
     for name in entries {
         match zip.by_name(name) {
@@ -142,8 +149,8 @@ fn extract_text_from_zip(raw: &RawDoc, entries: &[&str]) -> anyhow::Result<Strin
 }
 
 fn list_zip_entries(raw: &RawDoc, predicate: impl Fn(&str) -> bool) -> anyhow::Result<Vec<String>> {
-    let zip = ZipArchive::new(Cursor::new(&raw.bytes))
-        .map_err(|e| anyhow::anyhow!("open zip: {e}"))?;
+    let zip =
+        ZipArchive::new(Cursor::new(&raw.bytes)).map_err(|e| anyhow::anyhow!("open zip: {e}"))?;
     Ok((0..zip.len())
         .map(|i| zip.name_for_index(i).unwrap_or("").to_owned())
         .filter(|n| predicate(n))

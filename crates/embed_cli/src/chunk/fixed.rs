@@ -115,17 +115,22 @@ fn clamp_word_end(text: &str, start: usize, max_chars: usize) -> usize {
         let lower = cap.saturating_sub(32 * 4);
         let mut back = cap;
         while back > lower {
-            if back <= text.len() && text.is_char_boundary(back) {
-                if let Some(c) = text[back..].chars().next() {
-                    if c.is_whitespace() {
-                        return back;
-                    }
-                }
+            if back <= text.len()
+                && text.is_char_boundary(back)
+                && let Some(c) = text[back..].chars().next()
+                && c.is_whitespace()
+            {
+                return back;
             }
             back -= 1;
         }
     }
-    text.len().min(start.saturating_add(text[start..].len()).min(end + max_chars).max(end))
+    text.len().min(
+        start
+            .saturating_add(text[start..].len())
+            .min(end + max_chars)
+            .max(end),
+    )
 }
 
 /// Snap forward to a char boundary (and skip leading whitespace).
@@ -135,11 +140,11 @@ fn clamp_word_start(text: &str, idx: usize) -> usize {
         i += 1;
     }
     while i < text.len() {
-        if let Some(c) = text[i..].chars().next() {
-            if c.is_whitespace() {
-                i += c.len_utf8();
-                continue;
-            }
+        if let Some(c) = text[i..].chars().next()
+            && c.is_whitespace()
+        {
+            i += c.len_utf8();
+            continue;
         }
         break;
     }
@@ -173,10 +178,17 @@ mod tests {
     fn fixed_chunker_produces_multiple_chunks_with_overlap() {
         let body = "lorem ipsum ".repeat(800); // ~9600 chars, ~2400 tokens
         let c = FixedChunker {
-            cfg: ChunkConfig { size: 100, overlap: 20 },
+            cfg: ChunkConfig {
+                size: 100,
+                overlap: 20,
+            },
         };
         let chunks = c.chunk(&doc(&body));
-        assert!(chunks.len() >= 5, "expected several chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 5,
+            "expected several chunks, got {}",
+            chunks.len()
+        );
         // chunk_idx is monotonic and starts at 0
         for (i, ch) in chunks.iter().enumerate() {
             assert_eq!(ch.chunk_idx as usize, i);
@@ -187,7 +199,10 @@ mod tests {
     #[test]
     fn empty_text_emits_no_chunks() {
         let c = FixedChunker {
-            cfg: ChunkConfig { size: 100, overlap: 20 },
+            cfg: ChunkConfig {
+                size: 100,
+                overlap: 20,
+            },
         };
         assert!(c.chunk(&doc("")).is_empty());
     }

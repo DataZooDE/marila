@@ -2,12 +2,12 @@
 //! ListNamespaces, GetNamespace, DeleteNamespace.
 //!
 //! Same body runs against local marila and real AWS. Wire shape
-//! captured in CLAUDE.md C-10.
+//! captured in doc/GAP_ANALYSIS.md.
 
 use aws_sdk_s3tables::Client;
 use marila_integration_tests::{
     harness::{MarilaProcess, Target, tables_client, unique_bucket_name},
-    require_aws,
+    require_aws, require_lakekeeper_shared_storage,
 };
 
 /// Bucket scope helper — creates a fresh table bucket, runs `body`,
@@ -47,6 +47,7 @@ where
 #[tokio::test]
 async fn local_create_namespace_round_trips() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     with_table_bucket(c, "nscreate", create_then_list).await;
 }
@@ -106,6 +107,7 @@ async fn create_then_list(c: Client, arn: String) {
 #[tokio::test]
 async fn local_get_namespace_returns_full_shape() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     with_table_bucket(c, "nsget", get_round_trip).await;
 }
@@ -152,6 +154,7 @@ async fn get_round_trip(c: Client, arn: String) {
 #[tokio::test]
 async fn local_delete_namespace_then_gone() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     with_table_bucket(c, "nsdel", delete_then_gone).await;
 }

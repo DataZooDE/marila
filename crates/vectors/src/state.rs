@@ -1,7 +1,7 @@
 //! Wire-shape DTOs for the `s3vectors` AWS-JSON façade.
 //!
 //! Field names match the lowercase-camelCase shapes captured live
-//! (CLAUDE.md C-2, C-2a, C-2b).
+//! (doc/GAP_ANALYSIS.md, C-2a, C-2b).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ pub struct ListVectorBucketsInput {
 pub struct ListVectorBucketsOutput {
     pub vector_buckets: Vec<VectorBucketSummary>,
     /// **Absent** (not `null`) when there are no further pages — matches
-    /// the AWS wire shape (CLAUDE.md C-2b).
+    /// the AWS wire shape (doc/GAP_ANALYSIS.md).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_token: Option<String>,
 }
@@ -50,7 +50,7 @@ pub struct VectorBucketSummary {
     pub vector_bucket_name: String,
     pub vector_bucket_arn: String,
     /// Epoch-seconds as a JSON number — the `restJson1` default and the
-    /// shape S3 Vectors actually sends on the wire (CLAUDE.md C-2a).
+    /// shape S3 Vectors actually sends on the wire (doc/GAP_ANALYSIS.md).
     pub creation_time: i64,
 }
 
@@ -84,7 +84,7 @@ pub struct GetVectorBucketOutput {
 }
 
 /// The fully-populated bucket struct AWS returns from Get/GetByArn —
-/// includes the always-present `encryptionConfiguration` (CLAUDE.md C-2b).
+/// includes the always-present `encryptionConfiguration` (doc/GAP_ANALYSIS.md).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VectorBucketDescription {
@@ -190,14 +190,14 @@ pub struct ListIndexesInput {
 pub struct ListIndexesOutput {
     pub indexes: Vec<IndexSummary>,
     /// Absent (not null) when no further pages — matches the AWS wire
-    /// shape captured in CLAUDE.md C-2d.
+    /// shape captured in doc/GAP_ANALYSIS.md.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_token: Option<String>,
 }
 
 /// Summary item returned by `ListIndexes` — note the SHAPE is intentionally
 /// narrower than `IndexDescription` (no dataType/dimension/distanceMetric).
-/// Those live on GetIndex only (CLAUDE.md C-2d).
+/// Those live on GetIndex only (doc/GAP_ANALYSIS.md).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexSummary {
@@ -269,7 +269,7 @@ impl IndexDescription {
 // ---------------------------------------------------------------------------
 
 /// `data` is a tagged union — only `float32` is allowed today
-/// (CLAUDE.md C-2e). Wrapping as a struct with `Option<Vec<f32>>` lets
+/// (doc/GAP_ANALYSIS.md). Wrapping as a struct with `Option<Vec<f32>>` lets
 /// serde reject unknown variants on deserialise and skip the field on
 /// serialise when it's absent.
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -392,7 +392,7 @@ pub struct QueryVectorsInput {
 #[serde(rename_all = "camelCase")]
 pub struct QueryVectorsOutput {
     /// The index's configured distance metric (echoed back per the AWS
-    /// wire shape captured in CLAUDE.md C-2f).
+    /// wire shape captured in doc/GAP_ANALYSIS.md).
     pub distance_metric: String,
     pub vectors: Vec<QueryVectorsHit>,
 }

@@ -24,12 +24,7 @@
 //!   * tests assert against the same compiled marila code in `crates/api`
 //!     (no `cargo build -p marila` skew)
 
-use std::{
-    future::Future,
-    panic::AssertUnwindSafe,
-    path::PathBuf,
-    sync::OnceLock,
-};
+use std::{future::Future, panic::AssertUnwindSafe, path::PathBuf, sync::OnceLock};
 
 use futures::FutureExt;
 
@@ -55,7 +50,7 @@ pub enum Target {
 
 /// AWS region used by both targets so ARNs line up.
 ///
-/// Captured in [`CLAUDE.md`] C-5 — the user operates in `eu-west-1`, so
+/// Captured in [`doc/DISCOVERIES.md`] C-5 — the user operates in `eu-west-1`, so
 /// marila's local tests use the same region and the wire shapes match.
 pub const REGION: &str = "eu-west-1";
 
@@ -136,12 +131,20 @@ async fn aws_sdk_config(target: Target) -> aws_config::SdkConfig {
     }
 }
 
-/// Returns `true` if AWS credentials look usable for `Target::Aws`.
+/// Returns `true` if real-AWS contract tests are explicitly enabled and
+/// credentials look usable for `Target::Aws`.
 ///
-/// Cheapest possible probe: presence of `AWS_*` env or `~/.aws/credentials`.
-/// We deliberately do not call STS — the test that follows will surface a
-/// real auth failure with a useful message if creds are broken.
+/// Real AWS tests are opt-in so `cargo test --workspace` is hermetic by
+/// default and does not accidentally consume a developer's ambient AWS SSO
+/// profile. We deliberately do not call STS here — the test that follows
+/// will surface a real auth failure with a useful message if creds are broken.
 pub fn aws_creds_available() -> bool {
+    let enabled = std::env::var("MARILA_RUN_AWS_CONTRACTS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !enabled {
+        return false;
+    }
     if std::env::var_os("AWS_ACCESS_KEY_ID").is_some() {
         return true;
     }
@@ -165,8 +168,8 @@ macro_rules! require_aws {
     () => {
         if !$crate::harness::aws_creds_available() {
             eprintln!(
-                "[skipped] AWS_ACCESS_KEY_ID / AWS_PROFILE / ~/.aws not present \
-                 — set up AWS credentials to run this contract test"
+                "[skipped] real AWS contract test — set MARILA_RUN_AWS_CONTRACTS=1 \
+                 and configure AWS_ACCESS_KEY_ID, AWS_PROFILE, or ~/.aws credentials"
             );
             return;
         }
@@ -196,6 +199,8 @@ pub struct EmbeddedStack {
     /// already-running docker RustFS. Tables-side tests use this to
     /// decide whether Lakekeeper can see marila's S3.
     pub using_embedded_rustfs: bool,
+    /// `true` when the Lakekeeper HTTP port is reachable on localhost.
+    pub lakekeeper_reachable: bool,
     /// Held for the lifetime of the process when we booted RustFS
     /// ourselves; `None` when we're reusing docker.
     _rustfs: Option<rustfs::embedded::RustFSServer>,
@@ -207,7 +212,7 @@ impl EmbeddedStack {
     /// this mode because the docker-resident Lakekeeper can't see the
     /// ephemeral 127.0.0.1:NNNN port.
     pub fn lakekeeper_can_see_storage(&self) -> bool {
-        !self.using_embedded_rustfs
+        !self.using_embedded_rustfs && self.lakekeeper_reachable
     }
 }
 
@@ -260,25 +265,25 @@ async fn boot_embedded_stack_async() -> EmbeddedStack {
     // the vectors-side tests; the tables-side tests will skip via
     // `EmbeddedStack::lakekeeper_can_see_storage`. ----
     const DOCKER_S3: &str = "http://127.0.0.1:9000";
-    let (s3_endpoint, rustfs, using_embedded_rustfs) =
-        if docker_rustfs_reachable().await {
-            tracing::info!(s3 = DOCKER_S3, "reusing docker RustFS");
-            (DOCKER_S3.to_string(), None, false)
-        } else {
-            let port = rustfs::embedded::find_available_port()
-                .expect("pick a free port for rustfs");
-            let r = rustfs::embedded::RustFSServerBuilder::new()
-                .address(format!("127.0.0.1:{port}"))
-                .access_key("marila")
-                .secret_key("marilasecret")
-                .region(REGION)
-                .build()
-                .await
-                .expect("start embedded rustfs");
-            let url = r.endpoint();
-            tracing::info!(s3 = %url, "embedded RustFS ready");
-            (url, Some(r), true)
-        };
+    let (s3_endpoint, rustfs, using_embedded_rustfs) = if docker_rustfs_reachable().await {
+        tracing::info!(s3 = DOCKER_S3, "reusing docker RustFS");
+        (DOCKER_S3.to_string(), None, false)
+    } else {
+        let port = rustfs::embedded::find_available_port().expect("pick a free port for rustfs");
+        let r = rustfs::embedded::RustFSServerBuilder::new()
+            .address(format!("127.0.0.1:{port}"))
+            .access_key("marila")
+            .secret_key("marilasecret")
+            .region(REGION)
+            .build()
+            .await
+            .expect("start embedded rustfs");
+        let url = r.endpoint();
+        tracing::info!(s3 = %url, "embedded RustFS ready");
+        (url, Some(r), true)
+    };
+
+    let lakekeeper_reachable = lakekeeper_reachable().await;
 
     // ---- marila router, mounted on its own ephemeral port ----
     let state_db = state_db_path();
@@ -289,9 +294,7 @@ async fn boot_embedded_stack_async() -> EmbeddedStack {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind marila ephemeral port");
-    let bound = listener
-        .local_addr()
-        .expect("marila local_addr");
+    let bound = listener.local_addr().expect("marila local_addr");
     let marila_url = format!("http://{bound}");
     tracing::info!(marila = %marila_url, "embedded marila ready");
     tokio::spawn(async move {
@@ -304,6 +307,7 @@ async fn boot_embedded_stack_async() -> EmbeddedStack {
         marila_url,
         rustfs_url: s3_endpoint,
         using_embedded_rustfs,
+        lakekeeper_reachable,
         _rustfs: rustfs,
     }
 }
@@ -314,6 +318,16 @@ async fn docker_rustfs_reachable() -> bool {
     tokio::time::timeout(
         std::time::Duration::from_millis(150),
         tokio::net::TcpStream::connect("127.0.0.1:9000"),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false)
+}
+
+async fn lakekeeper_reachable() -> bool {
+    tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        tokio::net::TcpStream::connect("127.0.0.1:8181"),
     )
     .await
     .map(|r| r.is_ok())
@@ -340,8 +354,8 @@ macro_rules! require_lakekeeper_shared_storage {
 fn state_db_path() -> String {
     // Per-test-binary DB so tests don't see each other's state from a
     // prior run. Sits under target/ so `cargo clean` wipes it.
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/marila-test-state");
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/marila-test-state");
     let _ = std::fs::create_dir_all(&dir);
     dir.join(format!("state-{}.duckdb", Uuid::new_v4()))
         .to_string_lossy()

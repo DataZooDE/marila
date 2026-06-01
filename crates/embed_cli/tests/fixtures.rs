@@ -36,8 +36,7 @@ pub fn build_pdf(text: &str) -> Vec<u8> {
             Operation::new("ET", vec![]),
         ],
     };
-    let content_id =
-        doc.add_object(Stream::new(dictionary! {}, content.encode().unwrap()));
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.encode().unwrap()));
 
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page",
@@ -68,8 +67,7 @@ pub fn build_pdf(text: &str) -> Vec<u8> {
 fn zip_files(files: &[(&str, &[u8])]) -> Vec<u8> {
     let cursor = Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(cursor);
-    let opts = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for (name, body) in files {
         zip.start_file(*name, opts).unwrap();
         zip.write_all(body).unwrap();

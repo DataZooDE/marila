@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 use marila_embed::cli::{Cli, Command};
-use marila_embed::embed::stub::StubEmbedder;
 use marila_embed::embed::EmbeddingProvider;
+use marila_embed::embed::stub::StubEmbedder;
 use marila_embed::put;
 use marila_embed::sink::in_memory::InMemorySink;
 
@@ -15,10 +15,14 @@ fn put_args(text: &str) -> marila_embed::cli::PutArgs {
     let cli = Cli::try_parse_from([
         "marila-embed",
         "put",
-        "--vector-bucket-name", "doesnt-matter-for-in-memory",
-        "--index-name", "doesnt-matter-either",
-        "--embedding-provider", "stub",
-        "--text-value", text,
+        "--vector-bucket-name",
+        "doesnt-matter-for-in-memory",
+        "--index-name",
+        "doesnt-matter-either",
+        "--embedding-provider",
+        "stub",
+        "--text-value",
+        text,
     ])
     .expect("parse cli");
     match cli.command {
@@ -38,7 +42,11 @@ async fn put_text_value_lands_one_vector_with_standard_metadata() {
         .expect("put");
 
     let chunks = sink.chunks();
-    assert_eq!(chunks.len(), 1, "expected exactly one vector, got {chunks:?}");
+    assert_eq!(
+        chunks.len(),
+        1,
+        "expected exactly one vector, got {chunks:?}"
+    );
     let c = &chunks[0];
     assert_eq!(c.vector.len(), provider.dimension() as usize);
     assert_eq!(c.key.len(), 32, "content-hash key should be 32 hex chars");
@@ -64,12 +72,17 @@ async fn put_no_input_errors() {
     let cli = Cli::try_parse_from([
         "marila-embed",
         "put",
-        "--vector-bucket-name", "b",
-        "--index-name", "i",
-        "--embedding-provider", "stub",
+        "--vector-bucket-name",
+        "b",
+        "--index-name",
+        "i",
+        "--embedding-provider",
+        "stub",
     ])
     .expect("parse");
-    let Command::Put(args) = cli.command else { unreachable!() };
+    let Command::Put(args) = cli.command else {
+        unreachable!()
+    };
     let provider = Arc::new(StubEmbedder::default());
     let sink = Arc::new(InMemorySink::new());
     let err = put::run_with(args, provider, sink).await.unwrap_err();
@@ -85,9 +98,13 @@ async fn put_text_value_deterministic_key_across_runs() {
     let sink_a = InMemorySink::new();
     let sink_b = InMemorySink::new();
 
-    put::run_with(put_args("repeat me"), provider.clone(), Arc::new(sink_a.clone()))
-        .await
-        .unwrap();
+    put::run_with(
+        put_args("repeat me"),
+        provider.clone(),
+        Arc::new(sink_a.clone()),
+    )
+    .await
+    .unwrap();
     put::run_with(put_args("repeat me"), provider, Arc::new(sink_b.clone()))
         .await
         .unwrap();

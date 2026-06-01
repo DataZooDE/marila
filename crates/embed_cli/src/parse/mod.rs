@@ -47,4 +47,3 @@ pub fn default_set() -> Vec<Arc<dyn Parser>> {
         Arc::new(xlsx::XlsxParser),
     ]
 }
-

@@ -28,9 +28,7 @@ use crate::embed::EmbeddingProvider;
 use crate::keys::chunk_key;
 use crate::parse::{self, ParsedDoc, Parser};
 use crate::progress::ProgressCounters;
-use crate::put::{
-    META_CHUNK_IDX, META_CONTENT_HASH, META_SRC_CONTENT, META_SRC_LOCATION,
-};
+use crate::put::{META_CHUNK_IDX, META_CONTENT_HASH, META_SRC_CONTENT, META_SRC_LOCATION};
 use crate::sink::{EmbeddedChunk, Sink};
 use crate::source::{RawDoc, local::LocalSourceConfig};
 
@@ -92,7 +90,10 @@ pub struct PipelineStats {
 }
 
 /// Run a pipeline drained by a single local-filesystem source.
-pub async fn run_local(cfg: PipelineConfig, source_cfg: LocalSourceConfig) -> Result<PipelineStats> {
+pub async fn run_local(
+    cfg: PipelineConfig,
+    source_cfg: LocalSourceConfig,
+) -> Result<PipelineStats> {
     let (raw_tx, raw_rx) = mpsc::channel::<RawDoc>(cfg.caps.source_to_parse);
     let checkpoint = cfg.checkpoint.clone();
     let source_handle = tokio::spawn(async move {
@@ -134,8 +135,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
     // checkpoint's per-source completion tracking.
     let (parsed_tx, parsed_rx) = mpsc::channel::<ParsedDoc>(caps.parse_to_chunk);
     let (chunk_tx, chunk_rx) = mpsc::channel::<Chunk>(caps.chunk_to_embed);
-    let (embedded_tx, embedded_rx) =
-        mpsc::channel::<(EmbeddedChunk, String)>(caps.embed_to_put);
+    let (embedded_tx, embedded_rx) = mpsc::channel::<(EmbeddedChunk, String)>(caps.embed_to_put);
 
     // ----- parse pool -----
     let parsers = cfg.parsers.clone();
@@ -218,9 +218,7 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                 let source = doc.source.clone();
                 let content_hash = doc.content_hash.clone();
                 for piece in pieces {
-                    if max_chunks > 0
-                        && counters.chunks.load(Ordering::Relaxed) >= max_chunks
-                    {
+                    if max_chunks > 0 && counters.chunks.load(Ordering::Relaxed) >= max_chunks {
                         debug!("max_chunks cap hit; stopping chunk emission");
                         break 'outer;
                     }
@@ -283,19 +281,19 @@ async fn drain(cfg: PipelineConfig, raw_rx: mpsc::Receiver<RawDoc>) -> Result<Pi
                                     );
                                     continue;
                                 }
-                                for (c, vector) in batch.into_iter().zip(resp.vectors.into_iter()) {
-                                    let key = chunk_key(
-                                        key_strategy,
-                                        &c.source,
-                                        c.chunk_idx,
-                                        &c.text,
-                                    );
+                                for (c, vector) in batch.into_iter().zip(resp.vectors) {
+                                    let key =
+                                        chunk_key(key_strategy, &c.source, c.chunk_idx, &c.text);
                                     let mut metadata = base_metadata(&c, no_source_content);
                                     for (k, v) in &extra_metadata {
                                         metadata.insert(k.clone(), v.clone());
                                     }
                                     let source = c.source.clone();
-                                    let ec = EmbeddedChunk { key, vector, metadata };
+                                    let ec = EmbeddedChunk {
+                                        key,
+                                        vector,
+                                        metadata,
+                                    };
                                     counters.embedded.fetch_add(1, Ordering::Relaxed);
                                     if embedded_tx.send((ec, source)).await.is_err() {
                                         break 'worker;

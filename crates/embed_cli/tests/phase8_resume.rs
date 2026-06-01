@@ -37,8 +37,11 @@ async fn resume_skips_done_sources_without_duplication() {
 
     // ----- Baseline: single run, everything goes through -----
     let baseline_sink = InMemorySink::new();
-    let baseline_chk =
-        Arc::new(Checkpoint::load(root.path().join("ck-baseline.jsonl"), true).await.unwrap());
+    let baseline_chk = Arc::new(
+        Checkpoint::load(root.path().join("ck-baseline.jsonl"), true)
+            .await
+            .unwrap(),
+    );
     let cfg = base_cfg(baseline_sink.clone(), Some(baseline_chk.clone()), 0);
     let stats = run_local(cfg, src_cfg(&dir)).await.unwrap();
     let baseline_count = baseline_sink.len();
@@ -47,16 +50,28 @@ async fn resume_skips_done_sources_without_duplication() {
 
     // ----- First pass: cap at 2 chunks to simulate an early crash -----
     let pass1_sink = InMemorySink::new();
-    let chk = Arc::new(Checkpoint::load(checkpoint_path.clone(), true).await.unwrap());
+    let chk = Arc::new(
+        Checkpoint::load(checkpoint_path.clone(), true)
+            .await
+            .unwrap(),
+    );
     let cfg = base_cfg(pass1_sink.clone(), Some(chk.clone()), 2);
     let stats1 = run_local(cfg, src_cfg(&dir)).await.unwrap();
-    assert!(stats1.put <= 2, "pass1 must have stopped early, got {}", stats1.put);
+    assert!(
+        stats1.put <= 2,
+        "pass1 must have stopped early, got {}",
+        stats1.put
+    );
     let pass1_count = pass1_sink.len();
     drop(chk);
 
     // ----- Second pass: resume, no cap -----
     let pass2_sink = InMemorySink::new();
-    let chk2 = Arc::new(Checkpoint::load(checkpoint_path.clone(), true).await.unwrap());
+    let chk2 = Arc::new(
+        Checkpoint::load(checkpoint_path.clone(), true)
+            .await
+            .unwrap(),
+    );
     let cfg = base_cfg(pass2_sink.clone(), Some(chk2), 0);
     let _stats2 = run_local(cfg, src_cfg(&dir)).await.unwrap();
 
@@ -97,7 +112,13 @@ fn base_cfg(
     PipelineConfig {
         provider: Arc::new(StubEmbedder::new(16)),
         sink: Arc::new(sink),
-        chunker: chunk::build(ChunkStrategy::Off, ChunkConfig { size: 100, overlap: 0 }),
+        chunker: chunk::build(
+            ChunkStrategy::Off,
+            ChunkConfig {
+                size: 100,
+                overlap: 0,
+            },
+        ),
         parsers: parse::default_set(),
         key_strategy: KeyStrategy::ContentHash,
         extra_metadata: Default::default(),

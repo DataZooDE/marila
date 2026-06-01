@@ -1,7 +1,7 @@
 //! Table handlers — proxy AWS s3tables table ops to Lakekeeper's
 //! Iceberg REST catalog API.
 //!
-//! AWS shape (CLAUDE.md C-10):
+//! AWS shape (doc/GAP_ANALYSIS.md):
 //!   PUT    /tables/{arn}/{ns}                body `{"name":...,"format":"ICEBERG","metadata":{...}}`
 //!   GET    /tables/{arn}/{ns}                → list of tables
 //!   GET    /tables/{arn}/{ns}/{name}         → full table description
@@ -135,7 +135,7 @@ pub async fn create_table(
 
     // Iceberg REST's loadTable response has a `metadata-location` and a
     // big `metadata` blob with a stable `table-uuid`. We map both onto
-    // AWS's `tableARN`/`versionToken` (CLAUDE.md C-10 — versionToken
+    // AWS's `tableARN`/`versionToken` (doc/GAP_ANALYSIS.md — versionToken
     // doesn't 1:1 with Iceberg commit tokens; we use the metadata
     // location as a stable monotonic version handle).
     let table_uuid = lake
@@ -182,9 +182,7 @@ pub async fn list_tables(
     Query(query): Query<ListTablesQuery>,
 ) -> Result<Json<ListTablesOutput>, AwsError> {
     let namespace = query.namespace.ok_or_else(|| {
-        AwsError::Validation(
-            "ListTables requires a `namespace` query parameter".to_owned(),
-        )
+        AwsError::Validation("ListTables requires a `namespace` query parameter".to_owned())
     })?;
     let bucket = parse_bucket_name_from_arn(&arn)?.to_owned();
     let row = run_state(app.state.clone(), {
@@ -194,7 +192,10 @@ pub async fn list_tables(
     .await?;
     let warehouse_id = row.table_bucket_id.clone();
 
-    let lake = app.lakekeeper.list_tables(&warehouse_id, &namespace).await?;
+    let lake = app
+        .lakekeeper
+        .list_tables(&warehouse_id, &namespace)
+        .await?;
     let identifiers = lake
         .get("identifiers")
         .and_then(|v| v.as_array())
@@ -399,7 +400,8 @@ fn extract_iceberg_schema(metadata: Option<&Value>) -> Result<Value, AwsError> {
             let mut obj = f.as_object().cloned().unwrap_or_default();
             obj.entry("id".to_owned())
                 .or_insert(Value::Number(serde_json::Number::from(idx + 1)));
-            obj.entry("required".to_owned()).or_insert(Value::Bool(false));
+            obj.entry("required".to_owned())
+                .or_insert(Value::Bool(false));
             Value::Object(obj)
         })
         .collect();
@@ -412,7 +414,7 @@ fn extract_iceberg_schema(metadata: Option<&Value>) -> Result<Value, AwsError> {
 
 /// Lakekeeper doesn't return per-table createdAt over the catalog API,
 /// so we synthesise a current-time placeholder in the AWS-expected
-/// nanosecond+Z format (CLAUDE.md C-9). Contract tests assert on
+/// nanosecond+Z format (doc/GAP_ANALYSIS.md). Contract tests assert on
 /// shape, not specific timestamp values.
 fn now_iso8601() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true)

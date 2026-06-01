@@ -32,8 +32,8 @@ impl Parser for PdfParser {
         &["pdf"]
     }
     fn parse(&self, raw: RawDoc) -> anyhow::Result<ParsedDoc> {
-        let doc = Document::load_mem(&raw.bytes)
-            .map_err(|e| anyhow::anyhow!("lopdf load_mem: {e}"))?;
+        let doc =
+            Document::load_mem(&raw.bytes).map_err(|e| anyhow::anyhow!("lopdf load_mem: {e}"))?;
         let pages = doc.get_pages();
         let total = pages.len();
         let mut text = String::new();

@@ -614,7 +614,7 @@ impl StateStore for DuckDbStateStore {
         let q_lit = format_float_array_literal(query, dim)?;
 
         // Oversample-and-post-filter mitigation per doc/DISCOVERIES.md
-        // D-12 / CLAUDE.md C-2f. AWS evaluates the metadata filter
+        // D-12 / doc/GAP_ANALYSIS.md. AWS evaluates the metadata filter
         // *during* HNSW traversal, so a restrictive filter still
         // returns topK matches when they exist. DuckDB-VSS, by
         // contrast, post-filters: HNSW returns ~topK candidates and
@@ -803,7 +803,7 @@ fn index_table_and_dim(
 
 /// Build a DuckDB literal of the form `[1.0, 2.0, ...]::FLOAT[N]`.
 /// Rejects non-finite values (NaN / Infinity) per the AWS contract
-/// (CLAUDE.md C-2e).
+/// (doc/GAP_ANALYSIS.md).
 fn format_float_array_literal(data: &[f32], dim: u32) -> Result<String, StateError> {
     debug_assert_eq!(data.len(), dim as usize);
     let mut s = String::with_capacity(data.len() * 8 + 32);

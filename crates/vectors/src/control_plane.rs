@@ -34,17 +34,17 @@ const MAX_VECTOR_BATCH: usize = 500;
 /// Max keys per GetVectors / DeleteVectors call (AWS limit per docs).
 const MAX_KEY_BATCH: usize = 500;
 
-/// Message body AWS sends on bucket-not-found (CLAUDE.md C-2b).
+/// Message body AWS sends on bucket-not-found (doc/GAP_ANALYSIS.md).
 const BUCKET_NOT_FOUND_MESSAGE: &str = "The specified vector bucket could not be found";
 
-/// Message body AWS sends on index-not-found (CLAUDE.md C-2c).
+/// Message body AWS sends on index-not-found (doc/GAP_ANALYSIS.md).
 const INDEX_NOT_FOUND_MESSAGE: &str = "The specified index could not be found";
 
 /// Message body AWS sends when DeleteVectorBucket runs on a bucket
-/// that still has indexes (CLAUDE.md C-2c).
+/// that still has indexes (doc/GAP_ANALYSIS.md).
 const BUCKET_NOT_EMPTY_MESSAGE: &str = "The specified vector bucket is not empty";
 
-/// Message body AWS sends on duplicate index name (CLAUDE.md C-2c).
+/// Message body AWS sends on duplicate index name (doc/GAP_ANALYSIS.md).
 const INDEX_ALREADY_EXISTS_MESSAGE: &str = "An index with the specified name already exists";
 
 /// Wiring for the vectors crate: the two stores plus the AWS-account /
@@ -158,7 +158,7 @@ pub async fn delete_vector_bucket(
 
     // Emptiness check first — matches the AWS contract that deleting a
     // bucket with surviving indexes returns ConflictException with the
-    // exact body in CLAUDE.md C-2c.
+    // exact body in doc/GAP_ANALYSIS.md.
     let indexes = run_state(app.state.clone(), {
         let bucket = name.clone();
         move |s| s.count_indexes(&bucket)
@@ -343,7 +343,11 @@ async fn purge_index_snapshots(app: &AppState, bucket: &str, index: &str) {
     let prefix = format!("{index}/");
     let mut after: Option<String> = None;
     loop {
-        match app.storage.list_objects(bucket, &prefix, after.as_deref()).await {
+        match app
+            .storage
+            .list_objects(bucket, &prefix, after.as_deref())
+            .await
+        {
             Ok(page) => {
                 for key in &page.keys {
                     if let Err(e) = app.storage.delete_object(bucket, key).await {
@@ -392,7 +396,7 @@ pub async fn put_vectors(
 
     // Translate the wire shape (tagged union) into the state-store
     // shape, validating each item's key length and the presence of the
-    // `float32` variant. Per CLAUDE.md C-2e, AWS rejects non-finite
+    // `float32` variant. Per doc/GAP_ANALYSIS.md, AWS rejects non-finite
     // values; the state layer's `format_float_array_literal` doubles
     // up on this defence in depth.
     let mut writes: Vec<VectorWrite> = Vec::with_capacity(input.vectors.len());
@@ -842,7 +846,7 @@ fn validate_vector_key(key: &str, idx: usize) -> Result<(), AwsError> {
 /// Resolve a data-plane target (`PutVectors` etc.) to `(bucket, index)`.
 ///
 /// Accepts either `indexArn` standalone, or `(vectorBucketName, indexName)`
-/// — same combination rules as `GetIndex` (CLAUDE.md C-2e).
+/// — same combination rules as `GetIndex` (doc/GAP_ANALYSIS.md).
 fn resolve_data_plane_target(
     bucket_name: &Option<String>,
     index_name: &Option<String>,
@@ -874,7 +878,7 @@ fn resolve_data_plane_target(
 /// State-error → AWS-error mapping for the data plane.
 ///
 /// AWS collapses bucket-not-found and index-not-found into a single
-/// `NotFoundException` with the **index** body text (CLAUDE.md C-2e).
+/// `NotFoundException` with the **index** body text (doc/GAP_ANALYSIS.md).
 /// DimensionMismatch becomes ValidationException matching the wire
 /// shape AWS emits.
 fn data_plane_error(e: AwsError) -> AwsError {

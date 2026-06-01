@@ -4,7 +4,7 @@
 //! (real S3 Vectors). A pass on one and a fail on the other means marila
 //! diverges from AWS — fix marila, not the test.
 //!
-//! Wire shape captured in CLAUDE.md C-2 (2026-05-17, eu-west-1).
+//! Wire shape captured in doc/GAP_ANALYSIS.md (2026-05-17, eu-west-1).
 
 use aws_sdk_s3vectors::Client;
 use marila_integration_tests::{

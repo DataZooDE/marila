@@ -11,11 +11,11 @@ name: marila
 # tables-side tests work end-to-end with Lakekeeper. If no, the harness
 # embeds RustFS in-process (`crates/integration_tests/src/harness.rs`),
 # vectors-side tests still run, and tables-side tests skip with a clear
-# message. See CLAUDE.md C-12.
+# message.
 
 services:
   rustfs:
-    image: rustfs/rustfs:latest
+    image: ${MARILA_RUSTFS_IMAGE:-rustfs/rustfs:1.0.0-beta.3}
     container_name: marila-rustfs
     command: ["server", "/data"]
     environment:
@@ -33,7 +33,7 @@ services:
       # RustFS correctly returns 403 on unauthenticated GET / (S3 requires
       # SigV4 for ListBuckets-on-root). `wget --spider` rejects that as
       # failure; check only that the connection succeeds. See
-      # doc/DISCOVERIES.md D-3 and CLAUDE.md C-6.
+      # doc/DISCOVERIES.md D-3.
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/ 2>&1 | grep -qv 'Connection refused' && exit 0 || exit 1"]
       interval: 5s
       timeout: 3s
@@ -51,12 +51,12 @@ services:
   # which we tolerate.
   #
   # Wire shapes:
-  #   - bootstrap:        POST /management/v1/bootstrap            (CLAUDE.md D-7)
+  #   - bootstrap:        POST /management/v1/bootstrap
   #   - warehouse create: POST /management/v1/warehouse
   #   - Iceberg REST:     GET/POST /catalog/v1/...                 (consumed by marila-tables)
 
   postgres:
-    image: postgres:17
+    image: ${MARILA_POSTGRES_IMAGE:-postgres:17.10-trixie}
     container_name: marila-postgres
     environment:
       POSTGRES_USER: lakekeeper
@@ -72,7 +72,7 @@ services:
     profiles: [lakekeeper]
 
   migrate:
-    image: quay.io/lakekeeper/catalog:latest-main
+    image: ${MARILA_LAKEKEEPER_IMAGE:-quay.io/lakekeeper/catalog:v0.12.1}
     container_name: marila-lakekeeper-migrate
     depends_on:
       postgres: { condition: service_healthy }
@@ -86,7 +86,7 @@ services:
     profiles: [lakekeeper]
 
   lakekeeper:
-    image: quay.io/lakekeeper/catalog:latest-main
+    image: ${MARILA_LAKEKEEPER_IMAGE:-quay.io/lakekeeper/catalog:v0.12.1}
     container_name: marila-lakekeeper
     depends_on:
       rustfs: { condition: service_healthy }
@@ -114,7 +114,7 @@ services:
     # One-shot: ensure the RustFS bucket Lakekeeper points at exists.
     # Lakekeeper validates a warehouse by writing a probe file; the
     # bucket must exist beforehand.
-    image: minio/mc:latest
+    image: ${MARILA_MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}
     container_name: marila-createbuckets
     depends_on:
       rustfs: { condition: service_healthy }

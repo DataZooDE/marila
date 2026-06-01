@@ -200,7 +200,7 @@ duckdb < demo/legacy/lakekeeper_verify.sql
 - The DuckDB ATTACH always uses `ENDPOINT 'localhost:9000'` on the S3
   secret because the demos run from the host. Lakekeeper-in-docker
   itself writes via the docker-network alias `http://rustfs:9000` —
-  same RustFS instance, two valid hostnames. CLAUDE.md C-6 / D-2.
+  same RustFS instance, two valid hostnames. doc/GAP_ANALYSIS.md / D-2.
 - `ACCESS_DELEGATION_MODE 'none'` + `AUTHORIZATION_TYPE 'none'` on
   the ATTACH are both required: the former so DuckDB uses our
   `TYPE s3` secret for data writes (D-1), the latter so it doesn't

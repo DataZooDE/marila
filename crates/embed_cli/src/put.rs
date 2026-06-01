@@ -45,11 +45,17 @@ pub async fn run(args: PutArgs) -> Result<PutOutcome> {
 
     if !args.text.is_empty() {
         let stats = run_pipeline(args, provider, sink).await?;
-        return Ok(PutOutcome { dry_run, stats: Some(stats) });
+        return Ok(PutOutcome {
+            dry_run,
+            stats: Some(stats),
+        });
     }
 
     run_with(args, provider, sink).await?;
-    Ok(PutOutcome { dry_run, stats: None })
+    Ok(PutOutcome {
+        dry_run,
+        stats: None,
+    })
 }
 
 async fn build_provider(args: &PutArgs) -> Result<Arc<dyn EmbeddingProvider>> {
@@ -65,8 +71,9 @@ async fn build_provider(args: &PutArgs) -> Result<Arc<dyn EmbeddingProvider>> {
             Ok(Arc::new(StubEmbedder::new(dim)))
         }
         EmbeddingProviderName::Openai => {
-            let provider =
-                crate::embed::openai::OpenAiEmbedder::from_env(args.common.embedding_model.clone())?;
+            let provider = crate::embed::openai::OpenAiEmbedder::from_env(
+                args.common.embedding_model.clone(),
+            )?;
             Ok(Arc::new(provider))
         }
         EmbeddingProviderName::Ollama => {
@@ -81,10 +88,7 @@ async fn build_provider(args: &PutArgs) -> Result<Arc<dyn EmbeddingProvider>> {
     }
 }
 
-async fn build_sink(
-    args: &PutArgs,
-    provider: &dyn EmbeddingProvider,
-) -> Result<Arc<dyn Sink>> {
+async fn build_sink(args: &PutArgs, provider: &dyn EmbeddingProvider) -> Result<Arc<dyn Sink>> {
     if args.dry_run {
         return Ok(Arc::new(InMemorySink::new()));
     }
@@ -133,7 +137,7 @@ pub async fn run_with(
 
     let embedded: Vec<EmbeddedChunk> = chunks
         .into_iter()
-        .zip(resp.vectors.into_iter())
+        .zip(resp.vectors)
         .map(|(c, vector)| {
             let mut metadata = base_metadata(&c, args.no_source_content);
             for (k, v) in &extra_metadata {
@@ -198,7 +202,9 @@ async fn run_pipeline(
         key_strategy: args.key_strategy,
         extra_metadata,
         no_source_content: args.no_source_content,
-        parse_concurrency: args.parse_concurrency.unwrap_or_else(default_parse_concurrency),
+        parse_concurrency: args
+            .parse_concurrency
+            .unwrap_or_else(default_parse_concurrency),
         embed_concurrency: args.embed_concurrency,
         embed_batch: args.embed_batch,
         put_batch: args.put_batch,
@@ -296,9 +302,5 @@ fn parse_metadata(json: Option<&str>) -> Result<BTreeMap<String, Value>> {
     let obj = v
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("--metadata must be a JSON object"))?;
-    Ok(obj
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect())
+    Ok(obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
 }
-

@@ -45,7 +45,7 @@ SECRET_KEY = os.environ.get("MARILA_SECRET_ACCESS_KEY", "marilasecret")
 
 # The S3 endpoint *DuckDB* talks to. Marila itself uses RustFS via
 # docker's `rustfs:9000` alias, but DuckDB runs on the host and reaches
-# RustFS on localhost — see CLAUDE.md C-6 / D-2.
+# RustFS on localhost — see doc/GAP_ANALYSIS.md / D-2.
 DUCKDB_S3_ENDPOINT = os.environ.get("DEMO_DUCKDB_S3_ENDPOINT", "localhost:9000")
 
 DEMO_DIR = pathlib.Path(__file__).parent

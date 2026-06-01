@@ -64,12 +64,11 @@ impl TokenCounter for TiktokenCounter {
 /// if tiktoken-rs init fails (it shouldn't), we silently downgrade
 /// to the char estimate.
 pub fn for_provider(provider: &str, model: Option<&str>) -> Arc<dyn TokenCounter> {
-    if provider == "openai" {
-        if let Some(m) = model {
-            if let Ok(c) = TiktokenCounter::for_model(m) {
-                return Arc::new(c);
-            }
-        }
+    if provider == "openai"
+        && let Some(m) = model
+        && let Ok(c) = TiktokenCounter::for_model(m)
+    {
+        return Arc::new(c);
     }
     Arc::new(CharEstimate)
 }

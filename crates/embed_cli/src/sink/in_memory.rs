@@ -58,8 +58,8 @@ mod tests {
             vector: vec![1.0, 0.0],
             metadata: Default::default(),
         };
-        sink.put(&[one.clone()]).await.unwrap();
-        sink.put(&[two.clone()]).await.unwrap();
+        sink.put(std::slice::from_ref(&one)).await.unwrap();
+        sink.put(std::slice::from_ref(&two)).await.unwrap();
         let got = sink.chunks();
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].key, "k1");

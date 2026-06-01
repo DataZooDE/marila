@@ -1,6 +1,6 @@
 # `marila-embed` — embedding CLI for marila S3 Vectors
 
-> Status: spec v0.2, 2026-05-19. Author: Claude.
+> Status: spec v0.2, 2026-06-01.
 > Supersedes the earlier "reuse magpie-rs" draft. Companion to
 > `REQUIREMENTS.md` (the storage façade) and the existing
 > `demo/demo_vectors.py` which currently does this job inline.
@@ -496,7 +496,7 @@ marila-embed put \
     --vector-bucket-name marila-docs --index-name rag \
     --embedding-provider openai --embedding-model text-embedding-3-small \
     --chunk-strategy markdown --chunk-size 400 \
-    --text README.md --text CLAUDE.md --text 'doc/*.md'
+    --text README.md --text 'doc/*.md'
 
 marila-embed query \
     --vector-bucket-name marila-docs --index-name rag \
@@ -539,5 +539,4 @@ Python script becomes a 30-line shell wrapper, or goes away entirely.
 - The scalability smoke test (100k synthetic files, stub provider)
   asserts peak RSS < 256 MB on a developer laptop.
 - `demo/demo_vectors.py` is replaced (or wraps) the new CLI.
-- `CLAUDE.md` "What's done" notes the new binary; this spec stays at
-  `doc/EMBED_CLI_SPEC.md`.
+- This spec stays current with the implemented `marila-embed` binary.

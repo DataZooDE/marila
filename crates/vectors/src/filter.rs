@@ -4,7 +4,7 @@
 //! query language. We translate it to SQL that operates on the
 //! backing-table `meta JSON` column.
 //!
-//! Supported (CLAUDE.md C-2f):
+//! Supported (doc/GAP_ANALYSIS.md):
 //! - Implicit `$eq`: `{"field":"value"}` ≡ `{"field":{"$eq":"value"}}`
 //! - Comparison: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`
 //! - Set membership: `$in`, `$nin`

@@ -5,20 +5,11 @@
 > Named after *Aythya marila*, the greater scaup (a diving duck) — sits next
 > to its DataZoo sibling `quack`. Etymology: Greek *μαρίλη*, "embers".
 
-Status: v0.1, 2026-05-16. Author: Claude. Companion to
-`ARCHITECTURE.md` (arc42) and `DISCOVERIES.md` (lessons from the
-hypothesis-testing spike).
+Status: v0.1, 2026-06-01. Companion to `ARCHITECTURE.md` and
+`DISCOVERIES.md`.
 
-This is a requirements doc for the **next iteration** of the spike,
-written after the Lakekeeper verification re-shaped the tables-side
-architecture (see `VERIFICATION.md` and `GAP_ANALYSIS.md`). It
-supersedes the inline expectations in `README.md`.
-
-> **Naming note.** The spike code under `crates/` is still prefixed
-> `spike-*` (e.g. `spike-api`, `spike-tables`). Renaming those to
-> `marila-*` is a deferred one-shot refactor and is tracked in
-> `REQUIREMENTS.md` §10 below. Documentation from this point on
-> refers to the product as **marila** regardless.
+This requirements doc describes the current pre-1.0 project scope. It is
+not a production specification.
 
 ---
 
@@ -29,8 +20,8 @@ Allow AWS clients (`boto3.client("s3tables")`, `boto3.client("s3vectors")`,
 **marila** service that stores all data in a RustFS bucket, with API
 behavior close enough to AWS that most client code works unchanged.
 
-Audience: a coding agent picking up marila to harden it into a POC.
-Not a production specification.
+Audience: contributors and users evaluating marila for local
+compatibility testing.
 
 ---
 
@@ -91,7 +82,7 @@ Not a production specification.
 | Rank | Quality | Definition |
 | --- | --- | --- |
 | Q-1 | **Honest semantics** | Every API surface either matches AWS or returns an error / is documented in `GAP_ANALYSIS.md`. No silent divergence. |
-| Q-2 | **Local-first reproducibility** | `docker compose --profile lakekeeper up -d && cargo run -p spike-api && cargo test -p spike-integration-tests` (post-rename: `cargo run -p marila && cargo test -p marila-integration-tests`) runs on a clean checkout. No hidden AWS calls. |
+| Q-2 | **Local-first reproducibility** | `docker compose --profile lakekeeper up -d && cargo run -p marila && cargo test -p marila-integration-tests` runs on a clean checkout. No hidden AWS calls. |
 | Q-3 | **Small wire-shape compatibility** | `boto3.client(... endpoint_url=...)` works for every implemented op without bespoke client code. |
 | Q-4 | **Easy to swap engine layers** | RustFS → MinIO, DuckDB VSS → usearch, Lakekeeper → Polaris should each be a single-crate change. |
 | Q-5 | **Diagnosable failures** | Every error response includes the AWS `__type` code and a human-readable `Message`; service logs the principal + request id of the caller. |
@@ -102,10 +93,10 @@ Not a production specification.
 | ID | Constraint |
 | --- | --- |
 | C-1 | Rust workspace, `axum` for HTTP, `duckdb` crate with `bundled` for the vectors engine. |
-| C-2 | Lakekeeper image `quay.io/lakekeeper/catalog:latest-main` (or pinned) as the Iceberg REST catalog. No bespoke catalog implementation. |
+| C-2 | Version-pinned Lakekeeper image as the Iceberg REST catalog. No bespoke catalog implementation. |
 | C-3 | RustFS for the object store. MinIO is the named fallback if RustFS regresses. |
-| C-4 | One directory per research topic, prefixed with date (`CLAUDE.md` convention). All work in `2026-05-16-s3-tables-rustfs-spike/`. |
-| C-5 | Commits to `main`, not feature branches (`CLAUDE.md` convention). |
+| C-4 | Public changes land through normal pull requests against `main`. |
+| C-5 | CI must run formatting, clippy, and tests before merge. |
 | C-6 | No outbound network at runtime apart from extension auto-install on first DuckDB boot. Pre-bake extensions for air-gapped deploys. |
 
 ## 8. External interfaces
@@ -126,26 +117,15 @@ A reviewer should be able to:
 
 1. `git clone` the repo on a clean Linux box with Docker + Rust installed,
 2. `docker compose --profile lakekeeper up -d`,
-3. `cargo run -p spike-api` (post-rename: `cargo run -p marila`),
-4. `python demo/demo_tables.py` and observe rows round-trip through marila's
-   AWS-JSON façade,
-5. `duckdb < demo/lakekeeper_verify.sql` and observe full
-   CREATE/INSERT/UPDATE/DELETE working against RustFS via Lakekeeper,
-6. `python demo/demo_vectors.py` and observe a top-3 cosine query with a
-   metadata filter returning the seeded "anchor" vector,
-7. `cargo test -p spike-integration-tests` (post-rename:
-   `marila-integration-tests`) pass with both the boto3 and DuckDB
-   clients pointed at the running service.
-
-Each step has an entry in `VERIFICATION.md` confirming it works on at
-least one prior run, with the exact commands logged.
+3. `cargo run -p marila`,
+4. `cargo test -p marila-integration-tests`,
+5. follow `demo/README.md` for the vector and tables demos,
+6. run `cargo fmt --check`,
+7. run `cargo clippy --workspace --all-targets -- -D warnings`,
+8. run `cargo test --workspace --no-fail-fast`.
 
 ## 10. Open requirements (deliberately deferred)
 
-- **Crate rename** `spike-*` → `marila-*`. One-shot search-and-replace
-  across `Cargo.toml`s, `use` statements, `cargo run -p` targets, and
-  the `crates/` directory. Binary name becomes `marila`. Do this in
-  its own commit so the diff is reviewable.
 - VSS HNSW rebuild from the RustFS JSON snapshots on engine open.
   Not blocking the POC; needed before any "production-shaped" claim.
 - Oversample-and-post-filter mitigation for the filter-while-search

@@ -7,8 +7,8 @@ use marila_embed::embed::{
 };
 
 async fn ollama_available() -> bool {
-    let endpoint = std::env::var("OLLAMA_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:11434".into());
+    let endpoint =
+        std::env::var("OLLAMA_ENDPOINT").unwrap_or_else(|_| "http://localhost:11434".into());
     let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
@@ -49,12 +49,17 @@ async fn ollama_embed_round_trips_when_available() {
     assert_eq!(p.name(), "ollama");
     assert!(p.dimension() > 0);
 
-    let resp = p.embed(&["hello world", "the quick brown fox"]).await
+    let resp = p
+        .embed(&["hello world", "the quick brown fox"])
+        .await
         .expect("ollama embed");
     assert_eq!(resp.vectors.len(), 2);
     assert_eq!(resp.vectors[0].len() as u32, p.dimension());
     assert_eq!(resp.vectors[1].len() as u32, p.dimension());
-    assert!(!resp.usage.from_provider, "ollama doesn't report token counts");
+    assert!(
+        !resp.usage.from_provider,
+        "ollama doesn't report token counts"
+    );
     // Different inputs should give different vectors
     assert_ne!(resp.vectors[0], resp.vectors[1]);
 }

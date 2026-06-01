@@ -1,18 +1,18 @@
 //! Contract tests for the s3tables bucket-level control plane:
 //! CreateTableBucket / ListTableBuckets / GetTableBucket / DeleteTableBucket.
 //!
-//! Wire shape captured in CLAUDE.md C-9. The s3tables service is REST
+//! Wire shape captured in doc/GAP_ANALYSIS.md. The s3tables service is REST
 //! (verb + path) — distinct from s3vectors' all-POST shape — so this
 //! file uses `aws-sdk-s3tables` (not s3vectors).
 
 use aws_sdk_s3tables::Client;
 use marila_integration_tests::{
     harness::{MarilaProcess, Target, tables_client, unique_bucket_name},
-    require_aws,
+    require_aws, require_lakekeeper_shared_storage,
 };
 
 /// Create-and-cleanup helper that always deletes by ARN, even on panic,
-/// running on the test's own tokio runtime per CLAUDE.md C-8.
+/// running on the test's own tokio runtime per doc/GAP_ANALYSIS.md.
 async fn with_table_bucket<F, Fut>(c: Client, prefix: &str, body: F)
 where
     F: FnOnce(Client, String, String) -> Fut,
@@ -48,6 +48,7 @@ where
 #[tokio::test]
 async fn local_create_table_bucket_round_trips() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     with_table_bucket(c, "tbcreate", create_then_list).await;
 }
@@ -90,6 +91,7 @@ async fn create_then_list(c: Client, name: String, arn: String) {
 #[tokio::test]
 async fn local_get_table_bucket_by_arn() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     with_table_bucket(c, "tbget", get_round_trip).await;
 }
@@ -120,6 +122,7 @@ async fn get_round_trip(c: Client, name: String, arn: String) {
 #[tokio::test]
 async fn local_get_missing_table_bucket_is_not_found() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     missing_returns_not_found(c).await;
 }
@@ -156,6 +159,7 @@ async fn missing_returns_not_found(c: Client) {
 #[tokio::test]
 async fn local_delete_missing_table_bucket_is_not_found() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     delete_missing_is_not_found(c).await;
 }

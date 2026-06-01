@@ -1,5 +1,5 @@
 //! Contract tests for `ListIndexes`, `GetIndex`, and standalone
-//! `DeleteIndex`. Wire shapes captured in CLAUDE.md C-2d (List/Get)
+//! `DeleteIndex`. Wire shapes captured in doc/GAP_ANALYSIS.md (List/Get)
 //! and C-2c (Delete).
 
 use aws_sdk_s3vectors::Client;
@@ -256,7 +256,7 @@ async fn get_by_name_full(c: Client, ctx: BucketCtx) {
     assert_eq!(
         enc.sse_type(),
         &SseType::Aes256,
-        "default SSE type must be AES256 per CLAUDE.md C-2b"
+        "default SSE type must be AES256 per doc/GAP_ANALYSIS.md"
     );
 }
 

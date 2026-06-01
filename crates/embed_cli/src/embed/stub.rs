@@ -69,7 +69,10 @@ impl EmbeddingProvider for StubEmbedder {
     }
 
     async fn embed(&self, inputs: &[&str]) -> anyhow::Result<EmbedResponse> {
-        let vectors: Vec<Vec<f32>> = inputs.iter().map(|t| embed_one(t, self.dimension)).collect();
+        let vectors: Vec<Vec<f32>> = inputs
+            .iter()
+            .map(|t| embed_one(t, self.dimension))
+            .collect();
         let estimated_tokens: u64 = inputs.iter().map(|t| (t.len() as u64).div_ceil(4)).sum();
         Ok(EmbedResponse {
             vectors,

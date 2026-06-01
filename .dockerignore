@@ -1,0 +1,16 @@
+target/
+.git/
+.github/
+.venv/
+demo/.venv/
+__pycache__/
+*.pyc
+*.duckdb
+*.duckdb.wal
+data/
+.docker-volumes/
+.env
+.env.local
+.marila-embed-checkpoint.jsonl
+.marila-embed.jsonl
+.parlis-checkpoint.jsonl

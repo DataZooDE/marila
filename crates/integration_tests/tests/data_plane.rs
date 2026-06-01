@@ -2,7 +2,7 @@
 //! PutVectors / GetVectors / ListVectors / DeleteVectors.
 //!
 //! Same body runs against both local marila and real AWS. Wire shapes
-//! captured in CLAUDE.md C-2e.
+//! captured in doc/GAP_ANALYSIS.md.
 
 use std::collections::HashMap;
 
@@ -125,7 +125,7 @@ async fn put_then_get(c: Client, ctx: BucketCtx) {
     assert!(by_key.contains_key("b"));
     assert!(
         !by_key.contains_key("c-missing"),
-        "missing keys must be silently omitted (CLAUDE.md C-2e)"
+        "missing keys must be silently omitted (doc/GAP_ANALYSIS.md)"
     );
 
     // Vector dims round-trip with float32 precision.
@@ -231,7 +231,7 @@ async fn list_paginates(c: Client, ctx: BucketCtx) {
     }
 
     // Loop until nextToken absent — AWS may emit empty pages with a
-    // cursor (CLAUDE.md C-2e), so the loop is the contract.
+    // cursor (doc/GAP_ANALYSIS.md), so the loop is the contract.
     let mut seen: std::collections::BTreeSet<String> = Default::default();
     let mut token: Option<String> = None;
     for _ in 0..20 {
@@ -290,7 +290,7 @@ async fn put_missing_index(c: Client, ctx: BucketCtx) {
         .expect_err("PutVectors on missing index must error");
     assert!(
         err.into_service_error().is_not_found_exception(),
-        "expected NotFoundException with the index-not-found body (CLAUDE.md C-2e)"
+        "expected NotFoundException with the index-not-found body (doc/GAP_ANALYSIS.md)"
     );
 }
 

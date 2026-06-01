@@ -26,7 +26,13 @@ async fn counters_reach_expected_totals_after_run() {
     let cfg = PipelineConfig {
         provider: Arc::new(StubEmbedder::new(16)),
         sink: Arc::new(sink.clone()),
-        chunker: chunk::build(ChunkStrategy::Off, ChunkConfig { size: 100, overlap: 0 }),
+        chunker: chunk::build(
+            ChunkStrategy::Off,
+            ChunkConfig {
+                size: 100,
+                overlap: 0,
+            },
+        ),
         parsers: parse::default_set(),
         key_strategy: KeyStrategy::ContentHash,
         extra_metadata: Default::default(),

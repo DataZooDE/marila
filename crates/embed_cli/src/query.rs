@@ -10,7 +10,9 @@ use aws_smithy_types::Document;
 use tracing::debug;
 
 use crate::cli::{EmbeddingProviderName, OutputFormat, QueryArgs};
-use crate::embed::{EmbeddingProvider, ollama::OllamaEmbedder, openai::OpenAiEmbedder, stub::StubEmbedder};
+use crate::embed::{
+    EmbeddingProvider, ollama::OllamaEmbedder, openai::OpenAiEmbedder, stub::StubEmbedder,
+};
 
 pub async fn run(args: QueryArgs) -> Result<()> {
     let query_text = read_query(&args)?;
@@ -18,9 +20,16 @@ pub async fn run(args: QueryArgs) -> Result<()> {
     let client = crate::aws::vectors_client(&args.common).await;
 
     let resp = provider.embed(&[query_text.as_str()]).await?;
-    let vec = resp.vectors.into_iter().next()
+    let vec = resp
+        .vectors
+        .into_iter()
+        .next()
         .ok_or_else(|| anyhow::anyhow!("embedder returned no vector"))?;
-    debug!(provider = provider.name(), dim = vec.len(), "embedded query");
+    debug!(
+        provider = provider.name(),
+        dim = vec.len(),
+        "embedded query"
+    );
 
     let mut req = client
         .query_vectors()
@@ -32,15 +41,22 @@ pub async fn run(args: QueryArgs) -> Result<()> {
         .return_metadata(args.return_metadata);
 
     if let Some(filter) = args.filter.as_deref() {
-        let parsed: serde_json::Value = serde_json::from_str(filter)
-            .context("--filter must be valid JSON")?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(filter).context("--filter must be valid JSON")?;
         req = req.filter(json_to_document(parsed));
     }
 
-    let out = req.send().await
+    let out = req
+        .send()
+        .await
         .map_err(|e| anyhow::anyhow!("QueryVectors: {e:?}"))?;
 
-    let metric = out.distance_metric.as_ref().map(|m| m.as_str()).unwrap_or("?").to_string();
+    let metric = out
+        .distance_metric
+        .as_ref()
+        .map(|m| m.as_str())
+        .unwrap_or("?")
+        .to_string();
     let hits: Vec<Hit> = out
         .vectors()
         .iter()
@@ -123,7 +139,7 @@ fn render_json(hits: &[Hit], metric: &str) {
 
 fn render_table(hits: &[Hit], metric: &str) {
     println!("distance metric: {metric}");
-    println!("{:>4}  {:>10}  {:>32}  {}", "#", "distance", "key", "snippet");
+    println!("{:>4}  {:>10}  {:>32}  snippet", "#", "distance", "key");
     for (i, h) in hits.iter().enumerate() {
         let dist = h
             .distance

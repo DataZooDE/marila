@@ -2,7 +2,7 @@
 //! ListTables, GetTable, GetTableMetadataLocation, DeleteTable.
 //!
 //! Same body runs against local marila and real AWS. Wire shape
-//! captured in CLAUDE.md C-10.
+//! captured in doc/GAP_ANALYSIS.md.
 
 use aws_sdk_s3tables::Client;
 use aws_sdk_s3tables::types::{
@@ -10,7 +10,7 @@ use aws_sdk_s3tables::types::{
 };
 use marila_integration_tests::{
     harness::{MarilaProcess, Target, tables_client, unique_bucket_name},
-    require_aws,
+    require_aws, require_lakekeeper_shared_storage,
 };
 
 /// Create a bucket + namespace, run `body`, always clean up on exit.
@@ -75,9 +75,7 @@ fn small_schema_metadata() -> TableMetadata {
         .fields(name_field)
         .build()
         .expect("build schema");
-    let iceberg = IcebergMetadata::builder()
-        .schema(schema)
-        .build();
+    let iceberg = IcebergMetadata::builder().schema(schema).build();
     TableMetadata::Iceberg(iceberg)
 }
 
@@ -88,6 +86,7 @@ fn small_schema_metadata() -> TableMetadata {
 #[tokio::test]
 async fn local_create_table_round_trips() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     with_bucket_and_namespace(c, "tcreate", create_then_get).await;
 }
@@ -159,6 +158,7 @@ async fn create_then_get(c: Client, arn: String, ns: String) {
 #[tokio::test]
 async fn local_list_tables_shows_created_table() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     with_bucket_and_namespace(c, "tlist", create_then_list).await;
 }
@@ -211,6 +211,7 @@ async fn create_then_list(c: Client, arn: String, ns: String) {
 #[tokio::test]
 async fn local_delete_table_then_get_is_not_found() {
     let _marila = MarilaProcess::start();
+    require_lakekeeper_shared_storage!();
     let c = tables_client(Target::Local).await;
     with_bucket_and_namespace(c, "tdel", delete_then_gone).await;
 }

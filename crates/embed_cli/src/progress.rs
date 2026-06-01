@@ -41,10 +41,8 @@ impl ProgressHandle {
         let stop = Arc::new(AtomicBool::new(false));
         let bar = ProgressBar::new_spinner();
         bar.set_style(
-            ProgressStyle::with_template(
-                "{spinner}  {prefix}  parsed {wide_msg}",
-            )
-            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+            ProgressStyle::with_template("{spinner}  {prefix}  parsed {wide_msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
         );
         bar.set_prefix(label.to_string());
         bar.enable_steady_tick(Duration::from_millis(250));

@@ -1,7 +1,7 @@
 //! Namespace handlers — proxy AWS s3tables namespace ops to Lakekeeper's
 //! Iceberg REST catalog API.
 //!
-//! AWS shape (CLAUDE.md C-10):
+//! AWS shape (doc/GAP_ANALYSIS.md):
 //!   PUT    /namespaces/{arn}                 body `{"namespace":["..."]}`
 //!   GET    /namespaces/{arn}                 → `{"namespaces":[...]}`
 //!   GET    /namespaces/{arn}/{ns}            → namespace details
@@ -116,24 +116,26 @@ pub async fn list_namespaces(
     // our state row.
     let summaries = namespaces
         .into_iter()
-        .filter_map(|n| n.as_array().map(|segs| {
-            let segs: Vec<String> = segs
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect();
-            NamespaceSummary {
-                namespace: segs,
-                // Iceberg REST doesn't expose a namespace-id over List —
-                // we'd have to do a GetNamespace per row to hydrate it.
-                // We leave it empty rather than fabricating; AWS-target
-                // contract tests can assert on shape, not specific values.
-                namespace_id: String::new(),
-                created_at: now_iso8601(),
-                created_by: row.owner_account_id.clone(),
-                owner_account_id: row.owner_account_id.clone(),
-                table_bucket_id: warehouse_id.clone(),
-            }
-        }))
+        .filter_map(|n| {
+            n.as_array().map(|segs| {
+                let segs: Vec<String> = segs
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect();
+                NamespaceSummary {
+                    namespace: segs,
+                    // Iceberg REST doesn't expose a namespace-id over List —
+                    // we'd have to do a GetNamespace per row to hydrate it.
+                    // We leave it empty rather than fabricating; AWS-target
+                    // contract tests can assert on shape, not specific values.
+                    namespace_id: String::new(),
+                    created_at: now_iso8601(),
+                    created_by: row.owner_account_id.clone(),
+                    owner_account_id: row.owner_account_id.clone(),
+                    table_bucket_id: warehouse_id.clone(),
+                }
+            })
+        })
         .collect();
 
     Ok(Json(ListNamespacesOutput {
@@ -213,7 +215,7 @@ pub async fn delete_namespace(
 
 /// Lakekeeper's catalog endpoints don't echo a per-namespace `createdAt`
 /// over List/Get, so we synthesise a current-time placeholder in the
-/// AWS-expected nanosecond+Z format (CLAUDE.md C-9). The contract tests
+/// AWS-expected nanosecond+Z format (doc/GAP_ANALYSIS.md). The contract tests
 /// assert on shape, not specific timestamp values.
 fn now_iso8601() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true)

@@ -7,7 +7,7 @@
 //!  - happy path by ARN
 //!  - `NotFoundException` for a missing bucket
 //!
-//! Wire shape captured in CLAUDE.md C-2b.
+//! Wire shape captured in doc/GAP_ANALYSIS.md.
 
 use aws_sdk_s3vectors::Client;
 use marila_integration_tests::{

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use marila_embed::chunk::{self, ChunkConfig};
 use marila_embed::cli::{ChunkStrategy, KeyStrategy};
-use marila_embed::embed::stub::StubEmbedder;
 use marila_embed::embed::EmbeddingProvider;
+use marila_embed::embed::stub::StubEmbedder;
 use marila_embed::parse;
 use marila_embed::pipeline::{ChannelCaps, PipelineConfig, run_local};
 use marila_embed::sink::in_memory::InMemorySink;
@@ -28,7 +28,11 @@ async fn pipeline_ingests_text_directory_into_multiple_chunks() {
     let body = "lorem ipsum dolor sit amet ".repeat(800); // long
     write(dir.path(), "a.txt", &body);
     write(dir.path(), "b.md", "# Heading\n\nsome content here.");
-    write(dir.path(), "c.html", "<html><body><p>greetings</p></body></html>");
+    write(
+        dir.path(),
+        "c.html",
+        "<html><body><p>greetings</p></body></html>",
+    );
     write(dir.path(), "skip.bin", "binary"); // no parser -> skipped
 
     let provider = Arc::new(StubEmbedder::new(64));
@@ -36,7 +40,13 @@ async fn pipeline_ingests_text_directory_into_multiple_chunks() {
     let cfg = PipelineConfig {
         provider: provider.clone(),
         sink: Arc::new(sink.clone()),
-        chunker: chunk::build(ChunkStrategy::Fixed, ChunkConfig { size: 100, overlap: 20 }),
+        chunker: chunk::build(
+            ChunkStrategy::Fixed,
+            ChunkConfig {
+                size: 100,
+                overlap: 20,
+            },
+        ),
         parsers: parse::default_set(),
         key_strategy: KeyStrategy::ContentHash,
         extra_metadata: Default::default(),
@@ -63,7 +73,11 @@ async fn pipeline_ingests_text_directory_into_multiple_chunks() {
     // Three parseable files (txt, md, html) — .bin has no parser, is
     // counted in raw_docs but skipped (no parse_failure, just warn).
     assert_eq!(stats.parsed_docs, 3);
-    assert!(stats.chunks > 1, "expected >1 chunk total, got {}", stats.chunks);
+    assert!(
+        stats.chunks > 1,
+        "expected >1 chunk total, got {}",
+        stats.chunks
+    );
     assert_eq!(stats.chunks, stats.embedded);
     assert_eq!(stats.embedded, stats.put);
 
@@ -93,7 +107,13 @@ async fn max_chunks_caps_emission() {
     let cfg = PipelineConfig {
         provider,
         sink: Arc::new(sink.clone()),
-        chunker: chunk::build(ChunkStrategy::Fixed, ChunkConfig { size: 50, overlap: 10 }),
+        chunker: chunk::build(
+            ChunkStrategy::Fixed,
+            ChunkConfig {
+                size: 50,
+                overlap: 10,
+            },
+        ),
         parsers: parse::default_set(),
         key_strategy: KeyStrategy::ContentHash,
         extra_metadata: Default::default(),
@@ -115,7 +135,11 @@ async fn max_chunks_caps_emission() {
         max_file_bytes: 50 * 1024 * 1024,
     };
     let stats = run_local(cfg, source_cfg).await.unwrap();
-    assert!(stats.chunks <= 5, "expected ≤5 chunks under cap, got {}", stats.chunks);
+    assert!(
+        stats.chunks <= 5,
+        "expected ≤5 chunks under cap, got {}",
+        stats.chunks
+    );
     assert!(stats.put <= 5);
 }
 
@@ -130,7 +154,13 @@ async fn max_file_bytes_skips_large_files() {
     let cfg = PipelineConfig {
         provider,
         sink: Arc::new(sink.clone()),
-        chunker: chunk::build(ChunkStrategy::Off, ChunkConfig { size: 100, overlap: 0 }),
+        chunker: chunk::build(
+            ChunkStrategy::Off,
+            ChunkConfig {
+                size: 100,
+                overlap: 0,
+            },
+        ),
         parsers: parse::default_set(),
         key_strategy: KeyStrategy::ContentHash,
         extra_metadata: Default::default(),

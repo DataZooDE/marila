@@ -106,7 +106,10 @@ mod tests {
     fn packs_sentences_until_cap() {
         let body = "Alpha bravo. Charlie delta echo. Foxtrot golf. Hotel india juliet kilo. ";
         let chunks = SentenceChunker {
-            cfg: ChunkConfig { size: 8, overlap: 0 }, // ~32 chars cap
+            cfg: ChunkConfig {
+                size: 8,
+                overlap: 0,
+            }, // ~32 chars cap
         }
         .chunk(&doc(body));
         assert!(chunks.len() >= 2, "got {} chunks", chunks.len());
@@ -119,7 +122,10 @@ mod tests {
     fn handles_giant_single_sentence() {
         let body = "a".repeat(500);
         let chunks = SentenceChunker {
-            cfg: ChunkConfig { size: 50, overlap: 0 }, // 200 chars
+            cfg: ChunkConfig {
+                size: 50,
+                overlap: 0,
+            }, // 200 chars
         }
         .chunk(&doc(&body));
         assert!(chunks.len() >= 2);

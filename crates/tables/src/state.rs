@@ -1,6 +1,6 @@
 //! Wire-shape DTOs for the `s3tables` REST+JSON façade.
 //!
-//! Field names match the camelCase shapes captured live (CLAUDE.md C-9).
+//! Field names match the camelCase shapes captured live (doc/GAP_ANALYSIS.md).
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ pub struct ListTableBucketsOutput {
 }
 
 /// Single bucket entry returned by both ListTableBuckets and
-/// GetTableBucket (they have the same shape — CLAUDE.md C-9).
+/// GetTableBucket (they have the same shape — doc/GAP_ANALYSIS.md).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableBucketSummary {
@@ -55,7 +55,7 @@ impl TableBucketSummary {
 }
 
 /// Render `dt` as ISO 8601 with nanosecond precision + `Z` suffix —
-/// the exact shape S3 Tables emits on the wire (CLAUDE.md C-9).
+/// the exact shape S3 Tables emits on the wire (doc/GAP_ANALYSIS.md).
 ///
 /// chrono's `to_rfc3339_opts(Nanos, true)` gives us that format
 /// with a single allocation.

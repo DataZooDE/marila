@@ -4,20 +4,12 @@
 > top of RustFS, Lakekeeper, and DuckDB. Named after *Aythya marila*,
 > the greater scaup. Sibling of `quack` in the DataZoo family.
 
-Status: v0.1, 2026-05-16. Author: Claude. Companion to
-`REQUIREMENTS.md` and `DISCOVERIES.md`. Style follows arc42 because
-that's what the sibling `2026-05-14-quack-oauth/architecture.md` uses.
+Status: v0.1, 2026-06-01. Companion to `REQUIREMENTS.md` and
+`DISCOVERIES.md`.
 
 This architecture reflects the **post-verification** design: Lakekeeper
 fronts Iceberg, marila is a thin AWS-JSON wrapper. It supersedes the
 original scaffold's "implement our own Iceberg REST catalog" approach.
-
-> **Naming note.** The current spike code uses `spike-*` crate names
-> (e.g. `spike-api`, `spike-tables`). The diagrams and prose below use
-> the **marila-\*** naming the codebase will move to. ADR-7 (§9) tracks
-> the rename.
-
----
 
 ## 1. Introduction and goals
 
@@ -43,7 +35,7 @@ See `REQUIREMENTS.md` §7. Highlights:
 
 - Rust workspace, `axum`, `duckdb` crate with `bundled`.
 - Lakekeeper is consumed as a black box; we do not fork it.
-- All work under `2026-05-16-s3-tables-rustfs-spike/`, committed to `main`.
+- Changes land through normal pull requests against `main`.
 
 ## 3. Context and scope
 
@@ -110,8 +102,7 @@ crates/aws_compat   marila-aws-compat   SigV4 permissive parser, AWS-JSON error 
 crates/integration_tests  marila-integration-tests  end-to-end tests against the running stack
 ```
 
-(Today's directory paths shown left; target crate names right. Current
-manifests still use the `spike-*` prefix — see ADR-7.)
+Directory paths are shown left; crate and binary names are shown right.
 
 ### 5.2 Level 2 — `crates/tables` internals
 
@@ -123,9 +114,8 @@ types.rs            AWS-JSON request/response shapes
 state.rs            (vestigial — kept for DML ops not delegated to Lakekeeper)
 ```
 
-The hand-rolled `iceberg_metadata.rs` from the spike scaffold is
-**obsolete** and should be deleted; Lakekeeper writes the initial
-metadata.json itself.
+Lakekeeper writes table metadata and handles Iceberg commit semantics;
+marila does not maintain a bespoke Iceberg metadata implementation.
 
 ### 5.3 Level 2 — `crates/vectors` internals
 
@@ -191,7 +181,7 @@ POST /QueryVectors {queryVector, topK: 10, filter: {"label": "a"}, returnDistanc
 ## 7. Deployment view
 
 Default deployment is `docker compose --profile lakekeeper up -d` plus
-`cargo run -p spike-api` (post-rename: `cargo run -p marila`) on the host:
+`cargo run -p marila` on the host:
 
 ```
 host (Linux)
@@ -213,20 +203,18 @@ the storage URL Lakekeeper returns:
 127.0.0.1 rustfs
 ```
 
-For a fully-containerized deployment, marila can be added to the compose
-graph under its own service (a Dockerfile is left as an exercise; see
-the commented-out service block at the bottom of `docker-compose.yml`).
+For a fully-containerized deployment, add the `marila` binary to the
+compose graph or publish it as a separate container image.
 
 ## 8. Cross-cutting concepts
 
 - **Auth**. `crates/aws_compat::sigv4` parses the `Authorization`
   header and logs the principal; nothing verifies. The verification
-  callback is a future plug-point modelled on
-  `../2026-05-14-quack-oauth/architecture.md`.
+  callback is a future plug-point.
 - **Errors**. All façade handlers return `Result<_, AwsError>`;
   `AwsError::into_response` emits the `{"__type": "…", "Message": "…"}`
-  envelope at the right HTTP status. `From<SpikeError>` /
-  `From<serde_json::Error>` impls make `?` ergonomic in handlers.
+  envelope at the right HTTP status. Conversion impls make `?`
+  ergonomic in handlers.
 - **Logging**. `tracing` + `tracing-subscriber` with `RUST_LOG` env
   filter. Tower `TraceLayer` adds per-request spans.
 - **State**. The vectors-side state schema lives in a DuckDB file
@@ -242,13 +230,13 @@ the commented-out service block at the bottom of `docker-compose.yml`).
 
 | # | Decision | Status |
 | --- | --- | --- |
-| ADR-1 | Use Lakekeeper for the Iceberg REST catalog instead of writing our own. | Verified (see `VERIFICATION.md`). |
+| ADR-1 | Use Lakekeeper for the Iceberg REST catalog instead of writing our own. | Implemented and covered by integration tests. |
 | ADR-2 | Pass `ACCESS_DELEGATION_MODE 'none'` on every DuckDB ATTACH against Lakekeeper. | Required by [duckdb-iceberg#594](https://github.com/duckdb/duckdb-iceberg/issues/594) workaround. Encoded in our docs and the demo SQL. |
 | ADR-3 | Delete `crates/tables/src/iceberg_metadata.rs` and the AWS-JSON `CreateTable`'s hand-rolled metadata.json writer. | Lakekeeper now owns that path. |
 | ADR-4 | Keep the vectors-side stack in-process on DuckDB VSS. | No off-the-shelf equivalent of Lakekeeper exists for S3 Vectors. |
 | ADR-5 | Mongo filter → SQL transpiler with conservative field-name grammar. | Spike-quality is fine; revisit if we ever expose this externally untrusted. |
 | ADR-6 | RustFS over MinIO for the default. Swap is one section of compose. | Verified RustFS works through Lakekeeper for full Iceberg writes. |
-| ADR-7 | Project named **marila**. Crates renamed `spike-*` → `marila-*`. Binary becomes `marila`. | Decided; the rename itself is a deferred one-shot refactor (REQUIREMENTS.md §10). |
+| ADR-7 | Project named **marila**. Crates and binary use the `marila` prefix. | Implemented. |
 
 ## 10. Quality scenarios
 
@@ -270,9 +258,9 @@ the commented-out service block at the bottom of `docker-compose.yml`).
 | R-2 | VSS HNSW persistence is experimental, with no WAL recovery. | RustFS JSON snapshots are the durable copy. Rebuild-on-startup path not yet implemented (deferred). |
 | R-3 | Filter-while-search vs post-filter for vector queries. | Documented headline gap. Oversample-and-post-filter is the v1 mitigation; structural fix is to swap to usearch or qdrant-segment. |
 | R-4 | DuckDB-iceberg writes only on unpartitioned/unsorted tables. | Document; reject partition spec in `CreateTable` until extension lifts the restriction. |
-| R-5 | DuckDB bundled build ~30 GB target dir + several minutes. | Document; switch to system `libduckdb` for CI if it becomes painful. |
+| R-5 | DuckDB bundled build creates a large target dir and several-minute clean builds. | Accepted for reproducibility; revisit if CI cost becomes painful. |
 | R-6 | Permissive auth means anything that can reach the service can change everything. | NG-1. Document. Pluggable verifier is the future plug-point. |
-| R-7 | Lakekeeper image `latest-main` floats. | Pin once we settle on a known-working tag. |
+| R-7 | Sidecar image updates can change behavior. | Compose defaults are version-pinned; update deliberately and test. |
 
 ## 12. Glossary
 

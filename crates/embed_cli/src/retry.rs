@@ -34,7 +34,11 @@ pub enum Attempt<T> {
 /// exponential backoff between attempts. Each retry is logged at WARN
 /// so a pipeline that keeps making forward progress despite transient
 /// 429s leaves visible breadcrumbs.
-pub async fn with_backoff<F, Fut, T>(label: &str, policy: RetryPolicy, mut op: F) -> anyhow::Result<T>
+pub async fn with_backoff<F, Fut, T>(
+    label: &str,
+    policy: RetryPolicy,
+    mut op: F,
+) -> anyhow::Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Attempt<T>>,
@@ -77,8 +81,8 @@ fn jitter_for(base: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test(flavor = "current_thread")]
     async fn succeeds_after_transient_failures() {

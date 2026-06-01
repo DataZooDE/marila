@@ -1,6 +1,6 @@
 //! Contract tests for `QueryVectors`.
 //!
-//! Wire shape captured in CLAUDE.md C-2f. Tests cover:
+//! Wire shape captured in doc/GAP_ANALYSIS.md. Tests cover:
 //!  - unfiltered topK (anchor is nearest)
 //!  - Mongo-filtered query (only matching-metadata vectors returned)
 //!  - distanceMetric echo on the response
@@ -113,7 +113,7 @@ async fn unfiltered_top_k(c: Client, ctx: BucketCtx) {
         .await
         .expect("QueryVectors");
 
-    // distanceMetric echo (CLAUDE.md C-2f).
+    // distanceMetric echo (doc/GAP_ANALYSIS.md).
     assert_eq!(
         resp.distance_metric(),
         Some(&DistanceMetric::Cosine),

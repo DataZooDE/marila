@@ -7,7 +7,7 @@ then answer a natural-language question by similarity search.
 
 [ga]: https://aws.amazon.com/blogs/aws/amazon-s3-vectors-now-generally-available-with-increased-scale-and-performance/
 
-The corpus is everything under `doc/` plus `README.md` and `CLAUDE.md`
+The corpus is everything under `doc/` plus `README.md` and `doc/DISCOVERIES.md`
 in the marila repo. Embeddings come from OpenAI's `text-embedding-3-small`
 (1536-d, $0.02 / 1M tokens — well under a cent for this corpus).
 
@@ -55,7 +55,7 @@ CHUNK_OVERLAP = 80
 PUT_BATCH = 50  # PutVectors accepts up to 500 per call; 50 keeps logs readable
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-CORPUS_GLOBS = ["README.md", "CLAUDE.md", "doc/*.md", "demo/README.md"]
+CORPUS_GLOBS = ["README.md", "doc/DISCOVERIES.md", "doc/*.md", "demo/README.md"]
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +275,8 @@ def main() -> int:
         q2 = ask(c, bucket, index, oai,
                  "What is the AWS-contract-first TDD methodology?")
         top = q2["vectors"][0]
-        assert top["metadata"]["file"] in {"CLAUDE.md", "doc/REQUIREMENTS.md"}, (
-            f"expected the methodology hit to cite CLAUDE.md or REQUIREMENTS.md, "
+        assert top["metadata"]["file"] in {"doc/DISCOVERIES.md", "doc/REQUIREMENTS.md"}, (
+            f"expected the methodology hit to cite doc/DISCOVERIES.md or REQUIREMENTS.md, "
             f"got {top['metadata']['file']}"
         )
 

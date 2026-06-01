@@ -24,7 +24,9 @@ async fn local_iceberg_proxy_forwards_to_lakekeeper() {
     let resp = match client.get(warehouses_url).send().await {
         Ok(r) => r,
         Err(_) => {
-            eprintln!("[skipped] Lakekeeper not reachable on :8181 — start with `docker compose --profile lakekeeper up -d`");
+            eprintln!(
+                "[skipped] Lakekeeper not reachable on :8181 — start with `docker compose --profile lakekeeper up -d`"
+            );
             return;
         }
     };
@@ -38,11 +40,11 @@ async fn local_iceberg_proxy_forwards_to_lakekeeper() {
         eprintln!("[skipped] no warehouses registered with Lakekeeper");
         return;
     };
-    let warehouse_id = warehouses
-        .iter()
-        .find_map(|w| {
-            w.get("warehouse-id").and_then(|v| v.as_str()).map(|s| s.to_owned())
-        });
+    let warehouse_id = warehouses.iter().find_map(|w| {
+        w.get("warehouse-id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned())
+    });
     let Some(warehouse_id) = warehouse_id else {
         eprintln!("[skipped] no warehouse-id in management response");
         return;
@@ -53,9 +55,7 @@ async fn local_iceberg_proxy_forwards_to_lakekeeper() {
 
     // Create namespace via the proxy.
     let create = client
-        .post(format!(
-            "{endpoint}/iceberg/v1/{warehouse_id}/namespaces"
-        ))
+        .post(format!("{endpoint}/iceberg/v1/{warehouse_id}/namespaces"))
         .json(&serde_json::json!({"namespace": [ns], "properties": {}}))
         .send()
         .await
@@ -69,13 +69,14 @@ async fn local_iceberg_proxy_forwards_to_lakekeeper() {
 
     // List namespaces via the proxy and verify our entry comes back.
     let list = client
-        .get(format!(
-            "{endpoint}/iceberg/v1/{warehouse_id}/namespaces"
-        ))
+        .get(format!("{endpoint}/iceberg/v1/{warehouse_id}/namespaces"))
         .send()
         .await
         .expect("GET namespaces via proxy");
-    assert!(list.status().is_success(), "ListNamespaces via proxy failed");
+    assert!(
+        list.status().is_success(),
+        "ListNamespaces via proxy failed"
+    );
     let listed: serde_json::Value = list.json().await.unwrap();
     let names: Vec<String> = listed
         .get("namespaces")
@@ -83,9 +84,8 @@ async fn local_iceberg_proxy_forwards_to_lakekeeper() {
         .map(|arr| {
             arr.iter()
                 .filter_map(|n| {
-                    n.as_array().and_then(|segs| {
-                        segs.first().and_then(|v| v.as_str().map(str::to_owned))
-                    })
+                    n.as_array()
+                        .and_then(|segs| segs.first().and_then(|v| v.as_str().map(str::to_owned)))
                 })
                 .collect()
         })

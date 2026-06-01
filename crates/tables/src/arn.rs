@@ -1,6 +1,6 @@
 use marila_aws_compat::AwsError;
 
-/// Format an S3 Tables bucket ARN to match what AWS emits (CLAUDE.md C-9):
+/// Format an S3 Tables bucket ARN to match what AWS emits (doc/GAP_ANALYSIS.md):
 /// `arn:aws:s3tables:<region>:<account>:bucket/<name>`
 pub fn table_bucket_arn(region: &str, account_id: &str, name: &str) -> String {
     format!("arn:aws:s3tables:{region}:{account_id}:bucket/{name}")

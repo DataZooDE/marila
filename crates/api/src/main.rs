@@ -10,7 +10,7 @@ async fn main() -> Result<()> {
     // When built without `embedded-rustfs`, install our own tracing
     // subscriber. With `embedded-rustfs`, RustFS's `init_obs` does it
     // (and would panic on a double `.init()` — same trap the test
-    // harness documents in CLAUDE.md C-12). In that mode we instead
+    // harness documents in doc/GAP_ANALYSIS.md). In that mode we instead
     // *seed* `RUST_LOG` with sensible defaults so RustFS's own
     // subscriber starts at info-level for marila + warn-level for
     // RustFS's internal scan noise (`metacache_set` / `store_list_objects`
@@ -101,9 +101,7 @@ async fn shutdown_signal() {
     use tokio::signal;
 
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("install ctrl-c handler");
+        signal::ctrl_c().await.expect("install ctrl-c handler");
     };
 
     #[cfg(unix)]

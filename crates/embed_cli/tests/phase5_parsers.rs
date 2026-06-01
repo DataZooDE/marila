@@ -43,7 +43,11 @@ fn docx_parser_extracts_text() {
     let bytes = fixtures::build_docx("hello marila from docx");
     let out = DocxParser.parse(raw(bytes, "docx")).expect("docx parse");
     assert_eq!(out.kind, DocKind::Docx);
-    assert!(out.text.contains("hello marila from docx"), "got: {:?}", out.text);
+    assert!(
+        out.text.contains("hello marila from docx"),
+        "got: {:?}",
+        out.text
+    );
 }
 
 #[test]
@@ -59,7 +63,11 @@ fn odt_parser_extracts_text() {
     let bytes = fixtures::build_odt("opendocument hello");
     let out = OdtParser.parse(raw(bytes, "odt")).expect("odt parse");
     assert_eq!(out.kind, DocKind::Odt);
-    assert!(out.text.contains("opendocument hello"), "got: {:?}", out.text);
+    assert!(
+        out.text.contains("opendocument hello"),
+        "got: {:?}",
+        out.text
+    );
 }
 
 #[test]
@@ -98,7 +106,7 @@ fn oversize_files_are_skipped_not_panicked() {
             marila_embed::source::local::run(cfg, tx).await.unwrap();
         });
         let mut count = 0;
-        while let Some(_) = rx.recv().await {
+        while rx.recv().await.is_some() {
             count += 1;
         }
         walker.await.unwrap();

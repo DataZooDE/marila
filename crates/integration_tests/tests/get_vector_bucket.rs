@@ -4,10 +4,10 @@
 //!  - lookup by `vectorBucketName`
 //!  - lookup by `vectorBucketArn`
 //!  - default `encryptionConfiguration.sseType == "AES256"` in the
-//!    response (CLAUDE.md C-2b)
+//!    response (doc/GAP_ANALYSIS.md)
 //!  - `NotFoundException` for a missing bucket
 //!
-//! Wire shape captured in CLAUDE.md C-2b.
+//! Wire shape captured in doc/GAP_ANALYSIS.md.
 
 use aws_sdk_s3vectors::Client;
 use aws_sdk_s3vectors::types::SseType;
@@ -90,7 +90,7 @@ async fn get_by_name(c: Client, name: String) {
     assert_eq!(
         enc.sse_type(),
         &SseType::Aes256,
-        "default SSE type must be AES256 per CLAUDE.md C-2b"
+        "default SSE type must be AES256 per doc/GAP_ANALYSIS.md"
     );
 }
 

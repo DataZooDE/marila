@@ -15,12 +15,18 @@ fn put_args(endpoint: &str, bucket: &str, index: &str, text: &str) -> marila_emb
     let cli = Cli::try_parse_from([
         "marila-embed",
         "put",
-        "--endpoint-url", endpoint,
-        "--vector-bucket-name", bucket,
-        "--index-name", index,
-        "--embedding-provider", "stub",
-        "--embedding-model", "stub-32",
-        "--text-value", text,
+        "--endpoint-url",
+        endpoint,
+        "--vector-bucket-name",
+        bucket,
+        "--index-name",
+        index,
+        "--embedding-provider",
+        "stub",
+        "--embedding-model",
+        "stub-32",
+        "--text-value",
+        text,
     ])
     .expect("parse cli");
     match cli.command {
@@ -43,8 +49,7 @@ async fn local_put_text_value_creates_index_and_lands_key() {
         .await
         .expect("CreateVectorBucket");
 
-    let outcome =
-        put_then_cleanup(endpoint, bucket.clone(), index.into(), c.clone()).await;
+    let outcome = put_then_cleanup(endpoint, bucket.clone(), index.into(), c.clone()).await;
     outcome.expect("phase2 e2e");
 }
 
@@ -101,7 +106,11 @@ async fn run_phase2(endpoint: String, bucket: String, index: String) -> anyhow::
         .index_name(&index)
         .send()
         .await?;
-    let keys: Vec<_> = listed.vectors().iter().map(|v| v.key().to_owned()).collect();
+    let keys: Vec<_> = listed
+        .vectors()
+        .iter()
+        .map(|v| v.key().to_owned())
+        .collect();
     assert_eq!(keys.len(), 1, "expected exactly one vector, got {keys:?}");
 
     let got = c
@@ -120,11 +129,13 @@ async fn run_phase2(endpoint: String, bucket: String, index: String) -> anyhow::
     let json = smithy_doc_to_json(m);
     let obj = json.as_object().expect("metadata is object");
     assert_eq!(
-        obj.get("S3VECTORS-EMBED-SRC-CONTENT").and_then(|v| v.as_str()),
+        obj.get("S3VECTORS-EMBED-SRC-CONTENT")
+            .and_then(|v| v.as_str()),
         Some("phase2-e2e content")
     );
     assert_eq!(
-        obj.get("S3VECTORS-EMBED-CHUNK-IDX").and_then(|v| v.as_u64()),
+        obj.get("S3VECTORS-EMBED-CHUNK-IDX")
+            .and_then(|v| v.as_u64()),
         Some(0)
     );
     Ok(())

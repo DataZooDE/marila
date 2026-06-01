@@ -28,8 +28,9 @@ impl OllamaEmbedder {
     /// the resulting vector length. One round-trip at construction
     /// avoids forcing the caller to hard-code per-model dims.
     pub async fn connect(endpoint: Option<String>, model: Option<String>) -> anyhow::Result<Self> {
-        let endpoint = endpoint
-            .unwrap_or_else(|| std::env::var("OLLAMA_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.into()));
+        let endpoint = endpoint.unwrap_or_else(|| {
+            std::env::var("OLLAMA_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.into())
+        });
         let endpoint = endpoint.trim_end_matches('/').to_string();
         let model = model.unwrap_or_else(|| DEFAULT_MODEL.into());
         let client = reqwest::Client::new();
@@ -52,7 +53,11 @@ impl OllamaEmbedder {
     }
 }
 
-async fn probe_dimension(client: &reqwest::Client, endpoint: &str, model: &str) -> anyhow::Result<u32> {
+async fn probe_dimension(
+    client: &reqwest::Client,
+    endpoint: &str,
+    model: &str,
+) -> anyhow::Result<u32> {
     let url = format!("{endpoint}/api/embed");
     let resp = client
         .post(&url)
@@ -70,9 +75,13 @@ async fn probe_dimension(client: &reqwest::Client, endpoint: &str, model: &str) 
             resp.text().await.unwrap_or_default()
         ));
     }
-    let body: OllamaEmbedResponse = resp.json().await
+    let body: OllamaEmbedResponse = resp
+        .json()
+        .await
         .map_err(|e| anyhow::anyhow!("ollama probe decode: {e}"))?;
-    let first = body.embeddings.first()
+    let first = body
+        .embeddings
+        .first()
         .ok_or_else(|| anyhow::anyhow!("ollama probe returned no embedding"))?;
     Ok(first.len() as u32)
 }

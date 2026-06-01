@@ -25,8 +25,6 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Query(args) => {
-            query::run(args).await
-        }
+        Command::Query(args) => query::run(args).await,
     }
 }

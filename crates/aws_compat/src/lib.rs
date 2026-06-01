@@ -4,7 +4,7 @@
 //! `s3vectors` handlers (`s3tables` uses `awsJson1_0` and will get its
 //! own envelope when that side comes online).
 //!
-//! See `CLAUDE.md` C-1 for the captured wire shape:
+//! See `doc/DISCOVERIES.md` C-1 for the captured wire shape:
 //!
 //! ```text
 //! HTTP/1.1 409 Conflict

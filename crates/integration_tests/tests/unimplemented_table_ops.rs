@@ -7,26 +7,90 @@ use marila_integration_tests::harness::local_endpoint;
 /// (method, path, op-name) tuples. Path uses a synthetic ARN — we only
 /// care about the envelope shape, not the bucket actually existing.
 const TUPLES: &[(&str, &str, &str)] = &[
-    ("GET", "/buckets/dummy-arn/encryption", "GetTableBucketEncryption"),
-    ("PUT", "/buckets/dummy-arn/encryption", "PutTableBucketEncryption"),
-    ("DELETE", "/buckets/dummy-arn/encryption", "DeleteTableBucketEncryption"),
-    ("GET", "/buckets/dummy-arn/maintenance/profile", "GetTableBucketMaintenanceConfiguration"),
-    ("PUT", "/buckets/dummy-arn/maintenance/profile", "PutTableBucketMaintenanceConfiguration"),
-    ("GET", "/buckets/dummy-arn/metricsConfiguration", "GetTableBucketMetricsConfiguration"),
-    ("PUT", "/buckets/dummy-arn/metricsConfiguration", "PutTableBucketMetricsConfiguration"),
-    ("DELETE", "/buckets/dummy-arn/metricsConfiguration", "DeleteTableBucketMetricsConfiguration"),
+    (
+        "GET",
+        "/buckets/dummy-arn/encryption",
+        "GetTableBucketEncryption",
+    ),
+    (
+        "PUT",
+        "/buckets/dummy-arn/encryption",
+        "PutTableBucketEncryption",
+    ),
+    (
+        "DELETE",
+        "/buckets/dummy-arn/encryption",
+        "DeleteTableBucketEncryption",
+    ),
+    (
+        "GET",
+        "/buckets/dummy-arn/maintenance/profile",
+        "GetTableBucketMaintenanceConfiguration",
+    ),
+    (
+        "PUT",
+        "/buckets/dummy-arn/maintenance/profile",
+        "PutTableBucketMaintenanceConfiguration",
+    ),
+    (
+        "GET",
+        "/buckets/dummy-arn/metricsConfiguration",
+        "GetTableBucketMetricsConfiguration",
+    ),
+    (
+        "PUT",
+        "/buckets/dummy-arn/metricsConfiguration",
+        "PutTableBucketMetricsConfiguration",
+    ),
+    (
+        "DELETE",
+        "/buckets/dummy-arn/metricsConfiguration",
+        "DeleteTableBucketMetricsConfiguration",
+    ),
     ("GET", "/buckets/dummy-arn/policy", "GetTableBucketPolicy"),
     ("PUT", "/buckets/dummy-arn/policy", "PutTableBucketPolicy"),
-    ("DELETE", "/buckets/dummy-arn/policy", "DeleteTableBucketPolicy"),
-    ("GET", "/buckets/dummy-arn/replication", "GetTableBucketReplication"),
-    ("PUT", "/buckets/dummy-arn/replication", "PutTableBucketReplication"),
-    ("DELETE", "/buckets/dummy-arn/replication", "DeleteTableBucketReplication"),
+    (
+        "DELETE",
+        "/buckets/dummy-arn/policy",
+        "DeleteTableBucketPolicy",
+    ),
+    (
+        "GET",
+        "/buckets/dummy-arn/replication",
+        "GetTableBucketReplication",
+    ),
+    (
+        "PUT",
+        "/buckets/dummy-arn/replication",
+        "PutTableBucketReplication",
+    ),
+    (
+        "DELETE",
+        "/buckets/dummy-arn/replication",
+        "DeleteTableBucketReplication",
+    ),
     ("GET", "/tables/dummy-arn/ns/name/policy", "GetTablePolicy"),
     ("PUT", "/tables/dummy-arn/ns/name/policy", "PutTablePolicy"),
-    ("DELETE", "/tables/dummy-arn/ns/name/policy", "DeleteTablePolicy"),
-    ("GET", "/tables/dummy-arn/ns/name/replication", "GetTableReplication"),
-    ("PUT", "/tables/dummy-arn/ns/name/replication", "PutTableReplication"),
-    ("DELETE", "/tables/dummy-arn/ns/name/replication", "DeleteTableReplication"),
+    (
+        "DELETE",
+        "/tables/dummy-arn/ns/name/policy",
+        "DeleteTablePolicy",
+    ),
+    (
+        "GET",
+        "/tables/dummy-arn/ns/name/replication",
+        "GetTableReplication",
+    ),
+    (
+        "PUT",
+        "/tables/dummy-arn/ns/name/replication",
+        "PutTableReplication",
+    ),
+    (
+        "DELETE",
+        "/tables/dummy-arn/ns/name/replication",
+        "DeleteTableReplication",
+    ),
     ("POST", "/tables/dummy-arn/ns/name/rename", "RenameTable"),
 ];
 

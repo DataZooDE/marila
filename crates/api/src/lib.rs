@@ -55,7 +55,7 @@ impl ServerConfig {
             // Filename intentionally not `state.duckdb` — DuckDB names
             // the catalog after the file stem, which would then collide
             // with our `state` schema and make `state.vector_buckets`
-            // ambiguous (CLAUDE.md C-10).
+            // ambiguous (doc/GAP_ANALYSIS.md).
             state_db: env_or("MARILA_STATE_DB", "data/marila.duckdb"),
             lakekeeper_url: env_or("MARILA_LAKEKEEPER_URL", DEFAULT_LAKEKEEPER_URL),
             lakekeeper_storage_endpoint: env_or(
@@ -89,8 +89,7 @@ impl ServerConfig {
 /// the storage and state stores described by `cfg`. Doesn't bind; the
 /// caller picks how to `axum::serve` it (or `tokio::spawn` it).
 pub async fn build_router(cfg: ServerConfig) -> Result<Router> {
-    let state =
-        Arc::new(DuckDbStateStore::open(&cfg.state_db).context("open state db")?);
+    let state = Arc::new(DuckDbStateStore::open(&cfg.state_db).context("open state db")?);
     let storage = Arc::new(
         S3BucketStore::connect(S3Config {
             endpoint: cfg.s3_endpoint.clone(),
@@ -139,8 +138,7 @@ pub async fn build_router(cfg: ServerConfig) -> Result<Router> {
         .merge(marila_vectors::router(vectors_state))
         .merge(marila_tables::router(tables_state))
         .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().include_headers(true)),
+            TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::new().include_headers(true)),
         ))
 }
 
@@ -174,8 +172,8 @@ pub struct EmbeddedRustFs {
 /// `rustfs::embedded` — calling this twice in the same process fails.
 #[cfg(feature = "embedded-rustfs")]
 pub async fn start_embedded_rustfs() -> Result<EmbeddedRustFs> {
-    let port = rustfs::embedded::find_available_port()
-        .context("pick a free port for embedded rustfs")?;
+    let port =
+        rustfs::embedded::find_available_port().context("pick a free port for embedded rustfs")?;
     let mut builder = rustfs::embedded::RustFSServerBuilder::new()
         .address(format!("127.0.0.1:{port}"))
         .access_key("marila")
@@ -189,8 +187,8 @@ pub async fn start_embedded_rustfs() -> Result<EmbeddedRustFs> {
             .with_context(|| format!("create embedded-rustfs volume {volume}"))?;
         // Canonical path so the user's `~`/relative paths land in a
         // single, stable directory across runs.
-        let canon = std::fs::canonicalize(&volume)
-            .with_context(|| format!("canonicalize {volume}"))?;
+        let canon =
+            std::fs::canonicalize(&volume).with_context(|| format!("canonicalize {volume}"))?;
         builder = builder.volume(canon.to_string_lossy().into_owned());
         tracing::info!(volume = %canon.display(), "embedded rustfs using persistent volume");
     } else {
@@ -200,7 +198,9 @@ pub async fn start_embedded_rustfs() -> Result<EmbeddedRustFs> {
         );
     }
 
-    let server = builder.build().await
+    let server = builder
+        .build()
+        .await
         .map_err(|e| anyhow::anyhow!("start embedded rustfs: {e}"))?;
     let endpoint = server.endpoint();
     tracing::info!(rustfs = %endpoint, "embedded rustfs ready");

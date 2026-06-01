@@ -27,7 +27,7 @@ pub struct LakekeeperConfig {
     /// `http://rustfs:9000` from inside the docker network.
     pub storage_endpoint: String,
     /// Static S3 credentials the warehouse uses for its server-side
-    /// metadata.json writes (CLAUDE.md D-8 / D-7).
+    /// metadata.json writes (doc/DISCOVERIES.md D-8 / D-7).
     pub storage_access_key_id: String,
     pub storage_secret_access_key: String,
     pub storage_region: String,
@@ -165,9 +165,7 @@ impl LakekeeperClient {
 
         match resp.status() {
             StatusCode::OK | StatusCode::CREATED => resp.json().await.map_err(internal),
-            StatusCode::CONFLICT => Err(AwsError::Conflict(
-                "Namespace already exists".to_owned(),
-            )),
+            StatusCode::CONFLICT => Err(AwsError::Conflict("Namespace already exists".to_owned())),
             StatusCode::NOT_FOUND => Err(AwsError::NotFound(
                 "The specified bucket does not exist.".to_owned(),
             )),
@@ -269,9 +267,7 @@ impl LakekeeperClient {
 
         match resp.status() {
             StatusCode::OK | StatusCode::CREATED => resp.json().await.map_err(internal),
-            StatusCode::CONFLICT => Err(AwsError::Conflict(
-                "Table already exists".to_owned(),
-            )),
+            StatusCode::CONFLICT => Err(AwsError::Conflict("Table already exists".to_owned())),
             StatusCode::NOT_FOUND => Err(AwsError::NotFound(
                 "The specified namespace does not exist.".to_owned(),
             )),

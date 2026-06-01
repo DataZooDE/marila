@@ -4,12 +4,12 @@
 > introduction and naming. This file is the lessons-learned log
 > regardless of branding.
 
-Status: v0.1, 2026-05-16. Author: Claude.
+Status: v0.1, 2026-06-01.
 
-A "brief the next marila coding agent so they don't have to re-discover
-any of this" log. Every entry has the symptom, the root cause, and the
-fix. Sourced from `VERIFICATION.md`, `GAP_ANALYSIS.md`, the original
-research memos in `research/`, and live tests done during the spike.
+This is a lessons-learned log for maintainers. Every entry has the
+symptom, the root cause, and the fix. It is sourced from implementation
+work, compatibility testing, and the semantic gaps tracked in
+`GAP_ANALYSIS.md`.
 
 The entries are roughly ordered by how badly each one will trip
 someone up if they don't know it.
@@ -246,8 +246,8 @@ more loudly. See `crates/core/src/engine.rs`.
 
 ## D-12 DuckDB-VSS post-filters; AWS S3 Vectors filter-while-search
 
-Already in `GAP_ANALYSIS.md` row V6; restating because it's the
-biggest semantic gap on the vectors side.
+Already in `GAP_ANALYSIS.md`; restating because it's the biggest
+semantic gap on the vectors side.
 
 - AWS evaluates the metadata filter *during* HNSW traversal. With a
   filter that selects 0.1% of vectors and `topK=10`, AWS still
@@ -270,11 +270,7 @@ The original scaffold had `crates/tables/src/iceberg_metadata.rs`
 writing a minimal v2 `metadata.json` from a Rust helper. Since
 Lakekeeper writes the initial metadata.json itself on
 `CreateTable`, the file should be **deleted**, and the AWS-JSON
-`CreateTable` handler should proxy to Lakekeeper instead of writing
-the JSON.
-
-This is ADR-3 in `ARCHITECTURE.md`. Anyone touching `crates/tables`
-should delete the file in the same commit.
+`CreateTable` handler proxies to Lakekeeper instead of writing the JSON.
 
 ## D-14 axum 0.8 path syntax is `{name}`, not `:name`
 
@@ -287,10 +283,8 @@ chaining (`get(h1).put(h2)`) still works the same way.
 We parse but don't verify. The shape of `Principal` in
 `crates/aws_compat/src/sigv4.rs` matches what a real verifier would
 return. The future verification point is a tower middleware on the
-top-level `Router`, with the same separation as
-`../2026-05-14-quack-oauth/architecture.md` (check_token, check_authz
-as scalar-function-like callbacks). Don't move auth into the
-handlers themselves; keep it at the edge.
+top-level `Router`. Don't move auth into the handlers themselves; keep
+it at the edge.
 
 ---
 
@@ -307,8 +301,7 @@ treats their absence as evidence either way.
   inputs (the field-name sanitization is conservative but unproven).
 - We did not test the lance fallback engine. The docker image and
   crate are wired up, but no demo exercises it.
-- We did not test a fully-containerized marila (a Dockerfile block is
-  left commented out in `docker-compose.yml`).
+- We did not test a fully-containerized marila image.
 
-If any of these become important, add them to `VERIFICATION.md` once
+If any of these become important, add a focused test or demo note once
 done.

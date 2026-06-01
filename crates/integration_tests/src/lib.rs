@@ -4,6 +4,6 @@
 //! the same `aws-sdk-s3vectors` client code. A divergence is a marila
 //! bug, not a test bug.
 //!
-//! See `CLAUDE.md` "Methodology — AWS-contract-first TDD" for the why.
+//! See `doc/DISCOVERIES.md` "Methodology — AWS-contract-first TDD" for the why.
 
 pub mod harness;

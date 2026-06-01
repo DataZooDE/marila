@@ -2,7 +2,7 @@
 //!
 //! AWS S3 Vectors is a `restJson1` service that exposes one POST endpoint
 //! per operation at `/<OperationName>`, all under the service root. The
-//! shape is captured live in CLAUDE.md C-2.
+//! shape is captured live in doc/GAP_ANALYSIS.md.
 
 use axum::{Json, Router, routing::post};
 use marila_aws_compat::AwsError;

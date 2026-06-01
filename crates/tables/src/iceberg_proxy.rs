@@ -65,14 +65,18 @@ pub async fn iceberg_proxy(
         .or_else(|| parts.uri.path().strip_prefix("/iceberg"))
         .unwrap_or(parts.uri.path());
 
-    let query = parts.uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = parts
+        .uri
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     let target = format!("{}/catalog/{tail}{query}", state.base_url);
 
-    let bytes = to_bytes(body, 50 * 1024 * 1024).await.map_err(|e| {
-        AwsError::Internal {
+    let bytes = to_bytes(body, 50 * 1024 * 1024)
+        .await
+        .map_err(|e| AwsError::Internal {
             message: format!("read proxy request body: {e}"),
-        }
-    })?;
+        })?;
 
     let mut builder = state
         .http

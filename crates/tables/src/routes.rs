@@ -1,7 +1,7 @@
 //! axum router for the s3tables façade.
 //!
 //! S3 Tables uses REST verbs + path-based routing — distinct from
-//! s3vectors' all-POST `/<OperationName>` shape (CLAUDE.md C-9).
+//! s3vectors' all-POST `/<OperationName>` shape (doc/GAP_ANALYSIS.md).
 //!
 //! The router stitches together:
 //! - bucket-level control plane    (`/buckets[/{arn}]`)
@@ -58,10 +58,7 @@ pub fn router(state: AppState) -> Router {
         // GetTable uses an **RPC-style** URL: /get-table?tableBucketARN=&namespace=&name=
         .route("/get-table", get(get_table))
         // DeleteTable: DELETE /tables/{arn}/{namespace}/{name}
-        .route(
-            "/tables/{arn}/{namespace}/{name}",
-            delete(delete_table),
-        )
+        .route("/tables/{arn}/{namespace}/{name}", delete(delete_table))
         // GetTableMetadataLocation: GET /tables/{arn}/{namespace}/{name}/metadata-location
         .route(
             "/tables/{arn}/{namespace}/{name}/metadata-location",
@@ -148,24 +145,69 @@ macro_rules! unimplemented_table_handler {
     };
 }
 
-unimplemented_table_handler!(unimplemented_get_table_bucket_encryption, "GetTableBucketEncryption");
-unimplemented_table_handler!(unimplemented_put_table_bucket_encryption, "PutTableBucketEncryption");
-unimplemented_table_handler!(unimplemented_delete_table_bucket_encryption, "DeleteTableBucketEncryption");
-unimplemented_table_handler!(unimplemented_get_table_bucket_maintenance_configuration, "GetTableBucketMaintenanceConfiguration");
-unimplemented_table_handler!(unimplemented_put_table_bucket_maintenance_configuration, "PutTableBucketMaintenanceConfiguration");
-unimplemented_table_handler!(unimplemented_get_table_bucket_metrics_configuration, "GetTableBucketMetricsConfiguration");
-unimplemented_table_handler!(unimplemented_put_table_bucket_metrics_configuration, "PutTableBucketMetricsConfiguration");
-unimplemented_table_handler!(unimplemented_delete_table_bucket_metrics_configuration, "DeleteTableBucketMetricsConfiguration");
-unimplemented_table_handler!(unimplemented_get_table_bucket_policy, "GetTableBucketPolicy");
-unimplemented_table_handler!(unimplemented_put_table_bucket_policy, "PutTableBucketPolicy");
-unimplemented_table_handler!(unimplemented_delete_table_bucket_policy, "DeleteTableBucketPolicy");
-unimplemented_table_handler!(unimplemented_get_table_bucket_replication, "GetTableBucketReplication");
-unimplemented_table_handler!(unimplemented_put_table_bucket_replication, "PutTableBucketReplication");
-unimplemented_table_handler!(unimplemented_delete_table_bucket_replication, "DeleteTableBucketReplication");
+unimplemented_table_handler!(
+    unimplemented_get_table_bucket_encryption,
+    "GetTableBucketEncryption"
+);
+unimplemented_table_handler!(
+    unimplemented_put_table_bucket_encryption,
+    "PutTableBucketEncryption"
+);
+unimplemented_table_handler!(
+    unimplemented_delete_table_bucket_encryption,
+    "DeleteTableBucketEncryption"
+);
+unimplemented_table_handler!(
+    unimplemented_get_table_bucket_maintenance_configuration,
+    "GetTableBucketMaintenanceConfiguration"
+);
+unimplemented_table_handler!(
+    unimplemented_put_table_bucket_maintenance_configuration,
+    "PutTableBucketMaintenanceConfiguration"
+);
+unimplemented_table_handler!(
+    unimplemented_get_table_bucket_metrics_configuration,
+    "GetTableBucketMetricsConfiguration"
+);
+unimplemented_table_handler!(
+    unimplemented_put_table_bucket_metrics_configuration,
+    "PutTableBucketMetricsConfiguration"
+);
+unimplemented_table_handler!(
+    unimplemented_delete_table_bucket_metrics_configuration,
+    "DeleteTableBucketMetricsConfiguration"
+);
+unimplemented_table_handler!(
+    unimplemented_get_table_bucket_policy,
+    "GetTableBucketPolicy"
+);
+unimplemented_table_handler!(
+    unimplemented_put_table_bucket_policy,
+    "PutTableBucketPolicy"
+);
+unimplemented_table_handler!(
+    unimplemented_delete_table_bucket_policy,
+    "DeleteTableBucketPolicy"
+);
+unimplemented_table_handler!(
+    unimplemented_get_table_bucket_replication,
+    "GetTableBucketReplication"
+);
+unimplemented_table_handler!(
+    unimplemented_put_table_bucket_replication,
+    "PutTableBucketReplication"
+);
+unimplemented_table_handler!(
+    unimplemented_delete_table_bucket_replication,
+    "DeleteTableBucketReplication"
+);
 unimplemented_table_handler!(unimplemented_get_table_policy, "GetTablePolicy");
 unimplemented_table_handler!(unimplemented_put_table_policy, "PutTablePolicy");
 unimplemented_table_handler!(unimplemented_delete_table_policy, "DeleteTablePolicy");
 unimplemented_table_handler!(unimplemented_get_table_replication, "GetTableReplication");
 unimplemented_table_handler!(unimplemented_put_table_replication, "PutTableReplication");
-unimplemented_table_handler!(unimplemented_delete_table_replication, "DeleteTableReplication");
+unimplemented_table_handler!(
+    unimplemented_delete_table_replication,
+    "DeleteTableReplication"
+);
 unimplemented_table_handler!(unimplemented_rename_table, "RenameTable");

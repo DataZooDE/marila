@@ -26,7 +26,10 @@ async fn markdown_pipeline_attaches_section_path_metadata() {
         sink: Arc::new(sink.clone()),
         chunker: chunk::build(
             ChunkStrategy::Markdown,
-            ChunkConfig { size: 1000, overlap: 0 },
+            ChunkConfig {
+                size: 1000,
+                overlap: 0,
+            },
         ),
         parsers: parse::default_set(),
         key_strategy: KeyStrategy::ContentHash,
@@ -84,7 +87,10 @@ async fn sentence_chunker_packs_sentences() {
         sink: Arc::new(sink.clone()),
         chunker: chunk::build(
             ChunkStrategy::Sentence,
-            ChunkConfig { size: 60, overlap: 0 },
+            ChunkConfig {
+                size: 60,
+                overlap: 0,
+            },
         ),
         parsers: parse::default_set(),
         key_strategy: KeyStrategy::ContentHash,

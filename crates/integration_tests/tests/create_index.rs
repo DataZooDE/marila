@@ -1,6 +1,6 @@
 //! Contract test for `CreateIndex` (and `DeleteIndex` for cleanup).
 //!
-//! Locks down (CLAUDE.md C-2c):
+//! Locks down (doc/GAP_ANALYSIS.md):
 //!  - happy path returns `indexArn = arn:aws:s3vectors:<r>:<a>:bucket/<b>/index/<i>`
 //!  - duplicate index name → ConflictException
 //!  - missing bucket → NotFoundException

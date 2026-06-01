@@ -2,7 +2,7 @@ use marila_aws_compat::AwsError;
 
 /// Format an S3 Vectors bucket ARN to match the shape AWS emits.
 ///
-/// Captured 2026-05-17 (CLAUDE.md C-2):
+/// Captured 2026-05-17 (doc/GAP_ANALYSIS.md):
 /// `arn:aws:s3vectors:eu-west-1:625644349722:bucket/<bucket-name>`
 pub fn vector_bucket_arn(region: &str, account_id: &str, bucket: &str) -> String {
     format!("arn:aws:s3vectors:{region}:{account_id}:bucket/{bucket}")
@@ -10,7 +10,7 @@ pub fn vector_bucket_arn(region: &str, account_id: &str, bucket: &str) -> String
 
 /// Format an S3 Vectors index ARN.
 ///
-/// AWS uses a nested resource shape (CLAUDE.md C-2c):
+/// AWS uses a nested resource shape (doc/GAP_ANALYSIS.md):
 /// `arn:aws:s3vectors:<region>:<account>:bucket/<b>/index/<i>`
 pub fn vector_index_arn(region: &str, account_id: &str, bucket: &str, index: &str) -> String {
     format!("arn:aws:s3vectors:{region}:{account_id}:bucket/{bucket}/index/{index}")

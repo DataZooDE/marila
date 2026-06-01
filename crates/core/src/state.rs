@@ -21,7 +21,7 @@ pub struct IndexRow {
     pub created_at: DateTime<Utc>,
 }
 
-/// The two distance metrics S3 Vectors supports today (CLAUDE.md C-2c).
+/// The two distance metrics S3 Vectors supports today (doc/GAP_ANALYSIS.md).
 ///
 /// Modelled as an enum (not a string) so handlers and the DuckDB
 /// HNSW backing-table DDL can't drift apart on spelling.
@@ -127,7 +127,7 @@ pub struct VectorPage {
 ///
 /// Distinct from [`VectorBucketRow`] — table buckets have UUID,
 /// owner-account, and a `bucket_type` ("customer"|"aws") per AWS's
-/// wire shape (CLAUDE.md C-9). They share zero schema with vector
+/// wire shape (doc/GAP_ANALYSIS.md). They share zero schema with vector
 /// buckets so they live in their own table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableBucketRow {
@@ -194,7 +194,7 @@ pub trait StateStore: Send + Sync {
     ) -> Result<IndexRow, StateError>;
 
     /// Number of indexes under a bucket. Used by `DeleteVectorBucket`
-    /// to enforce AWS's "bucket must be empty" rule (CLAUDE.md C-2c).
+    /// to enforce AWS's "bucket must be empty" rule (doc/GAP_ANALYSIS.md).
     fn count_indexes(&self, bucket: &str) -> Result<u64, StateError>;
 
     /// Cursor-paginated list of indexes within a bucket.
@@ -214,7 +214,7 @@ pub trait StateStore: Send + Sync {
     ///
     /// Returns [`StateError::NotFound`] for either a missing bucket or
     /// a missing index. The handler maps both to the same
-    /// AWS-NotFoundException-with-index-body text (CLAUDE.md C-2d).
+    /// AWS-NotFoundException-with-index-body text (doc/GAP_ANALYSIS.md).
     fn get_index(&self, bucket: &str, index: &str) -> Result<IndexRow, StateError>;
 
     /// Drop an index and its backing table. Idempotent w.r.t. the
@@ -225,7 +225,7 @@ pub trait StateStore: Send + Sync {
     // Data plane — operates on the backing table `vec_<b>__<i>`.
     // All four methods return `StateError::NotFound` when the index
     // doesn't exist; the handler maps that to AWS's
-    // "The specified index could not be found" body (CLAUDE.md C-2e).
+    // "The specified index could not be found" body (doc/GAP_ANALYSIS.md).
     // -----------------------------------------------------------------
 
     /// Upsert one or more vectors. AWS treats PutVectors as a
@@ -243,7 +243,7 @@ pub trait StateStore: Send + Sync {
     ) -> Result<(), StateError>;
 
     /// Fetch vectors by key. Missing keys are silently omitted from the
-    /// returned `Vec` — that matches the AWS contract (CLAUDE.md C-2e).
+    /// returned `Vec` — that matches the AWS contract (doc/GAP_ANALYSIS.md).
     fn get_vectors(
         &self,
         bucket: &str,
@@ -267,7 +267,7 @@ pub trait StateStore: Send + Sync {
     ) -> Result<VectorPage, StateError>;
 
     /// Delete one or more vectors by key. Missing keys are not an
-    /// error — AWS's contract is silently idempotent (CLAUDE.md C-2e).
+    /// error — AWS's contract is silently idempotent (doc/GAP_ANALYSIS.md).
     fn delete_vectors(&self, bucket: &str, index: &str, keys: &[String]) -> Result<(), StateError>;
 
     /// Top-K nearest-neighbour query.
@@ -278,7 +278,7 @@ pub trait StateStore: Send + Sync {
     /// parse Mongo filters. Pass `None` for an unfiltered query.
     ///
     /// `oversample` is the multiplier applied to `top_k` before
-    /// post-filtering — see CLAUDE.md C-2f. Pass 1 for no oversampling;
+    /// post-filtering — see doc/GAP_ANALYSIS.md. Pass 1 for no oversampling;
     /// values above 1 mitigate the post-filter recall collapse described
     /// in `doc/DISCOVERIES.md` D-12.
     fn query_vectors(
@@ -292,7 +292,7 @@ pub trait StateStore: Send + Sync {
     ) -> Result<Vec<QueryHit>, StateError>;
 
     // -----------------------------------------------------------------
-    // s3tables — table-bucket control plane (CLAUDE.md C-9).
+    // s3tables — table-bucket control plane (doc/GAP_ANALYSIS.md).
     // Schema and behaviour are separate from vector buckets so that
     // future tables-side work (namespaces, tables, Lakekeeper proxy)
     // doesn't bleed into the vectors schema.

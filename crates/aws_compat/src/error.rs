@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Errors that an S3 Vectors (restJson1) handler can return on the wire.
 ///
 /// Mapped to the `x-amzn-errortype` header + lowercase-`message` body
-/// shape that the AWS service uses (captured live in `CLAUDE.md` C-1).
+/// shape that the AWS service uses (captured live in `doc/DISCOVERIES.md` C-1).
 /// The SDK's `aws_sdk_s3vectors::types::error::*` enum keys off the
 /// header value, so the strings here are the contract.
 #[derive(Debug, Error)]
@@ -115,7 +115,7 @@ mod tests {
         );
         let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
         // Body uses lowercase `message` — this is the AWS wire shape and
-        // must not regress (CLAUDE.md C-1).
+        // must not regress (doc/GAP_ANALYSIS.md).
         assert_eq!(&bytes[..], br#"{"message":"nope"}"#);
     }
 

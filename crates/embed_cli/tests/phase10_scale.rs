@@ -41,7 +41,12 @@ async fn large_corpus_bounded_rss() {
 
     // Stage the corpus into target/tmp/scale/ so cargo clean wipes it.
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let dir = manifest.join("..").join("..").join("target").join("tmp").join("scale");
+    let dir = manifest
+        .join("..")
+        .join("..")
+        .join("target")
+        .join("tmp")
+        .join("scale");
     std::fs::create_dir_all(&dir).expect("mk scale dir");
 
     let body = body_block(10 * 1024);
@@ -59,11 +64,17 @@ async fn large_corpus_bounded_rss() {
     let cfg = PipelineConfig {
         provider: Arc::new(StubEmbedder::new(64)),
         sink: Arc::new(sink.clone()),
-        chunker: chunk::build(ChunkStrategy::Off, ChunkConfig { size: 400, overlap: 0 }),
+        chunker: chunk::build(
+            ChunkStrategy::Off,
+            ChunkConfig {
+                size: 400,
+                overlap: 0,
+            },
+        ),
         parsers: parse::default_set(),
         key_strategy: KeyStrategy::ContentHash,
         extra_metadata: Default::default(),
-        no_source_content: true,    // don't pin the 10 KB body in metadata
+        no_source_content: true, // don't pin the 10 KB body in metadata
         parse_concurrency: num_cpus::get().min(8),
         embed_concurrency: 16,
         embed_batch: 100,

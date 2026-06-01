@@ -83,10 +83,10 @@ pub async fn run_with_checkpoint(
         if include.is_some() && !include.as_ref().unwrap().is_match(&ext) {
             continue;
         }
-        if let Some(set) = exclude.as_ref() {
-            if set.is_match(&ext) {
-                continue;
-            }
+        if let Some(set) = exclude.as_ref()
+            && set.is_match(&ext)
+        {
+            continue;
         }
 
         let bytes = match tokio::fs::read(&path).await {
@@ -100,11 +100,11 @@ pub async fn run_with_checkpoint(
         let content_hash = blake3::hash(&bytes).to_hex().to_string();
         let source = path.display().to_string();
 
-        if let Some(chk) = checkpoint.as_deref() {
-            if chk.is_done(&source, &content_hash) {
-                debug!(source = %source, "checkpoint says done; skipping");
-                continue;
-            }
+        if let Some(chk) = checkpoint.as_deref()
+            && chk.is_done(&source, &content_hash)
+        {
+            debug!(source = %source, "checkpoint says done; skipping");
+            continue;
         }
 
         let raw = RawDoc {
