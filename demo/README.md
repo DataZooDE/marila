@@ -13,6 +13,12 @@ demo/
 └── legacy/    older one-shot scripts (sales_demo.py, rag_openai_demo.py, …)
 ```
 
+![Vector RAG demo terminal recording](vhs/vector-demo.gif)
+
+![Tables analytics demo terminal recording](vhs/tables-demo.gif)
+
+![marila-embed indexing CLI terminal recording](vhs/embed-cli.gif)
+
 ## Protocol boundary
 
 The demos are AWS-client demos, not privileged in-process examples:

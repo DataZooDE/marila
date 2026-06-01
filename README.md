@@ -26,6 +26,12 @@ The demos are the fastest way to see what marila is for:
   embeds it, and writes vectors with AWS-aligned `put` and `query`
   commands.
 
+![Vector RAG demo terminal recording](demo/vhs/vector-demo.gif)
+
+![Tables analytics demo terminal recording](demo/vhs/tables-demo.gif)
+
+![marila-embed indexing CLI terminal recording](demo/vhs/embed-cli.gif)
+
 The demo clients do not use private Rust hooks or in-process shortcuts.
 They are built with `boto3` / `botocore` and point normal AWS SDK clients
 at `endpoint_url=http://localhost:8080`:
