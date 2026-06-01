@@ -34,8 +34,10 @@ The demos are AWS-client demos, not privileged in-process examples:
   `--vector-bucket-name`, `--index-name`, `--text-value`, `--text`,
   `--k`, `--filter`) so it lines up with AWS's S3 Vectors tooling.
 
-VHS terminal recordings for the three public demo paths live in
-`demo/vhs/` and can be rendered from the repository root:
+The embedded GIFs are captured from the real Textual demo layouts with
+representative S3 Vectors / S3 Tables events. VHS tape scripts for the
+matching command-line walkthroughs live in `demo/vhs/` and can be
+rendered from the repository root:
 
 ```bash
 vhs demo/vhs/vector.tape

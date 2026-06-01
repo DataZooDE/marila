@@ -43,7 +43,9 @@ at `endpoint_url=http://localhost:8080`:
 - `marila-embed` uses the AWS Rust SDK `s3vectors` client, so indexing
   talks to marila exactly like any external AWS client would.
 
-Terminal recording scripts live in `demo/vhs/`:
+The GIFs above are captured from the real Textual demo layouts with
+representative S3 Vectors / S3 Tables events. VHS tape scripts for the
+matching command-line walkthroughs live in `demo/vhs/`:
 
 ```bash
 vhs demo/vhs/vector.tape
