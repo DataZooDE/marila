@@ -13,6 +13,30 @@ demo/
 └── legacy/    older one-shot scripts (sales_demo.py, rag_openai_demo.py, …)
 ```
 
+## Protocol boundary
+
+The demos are AWS-client demos, not privileged in-process examples:
+
+- `vector/` uses boto3's `s3vectors` client with
+  `endpoint_url=http://localhost:8080` to create buckets/indexes and run
+  vector puts/queries.
+- `tables/` uses boto3's `s3tables` client for buckets, namespaces, and
+  tables, then DuckDB's Iceberg REST client against marila's
+  `/iceberg/v1/...` proxy.
+- The `marila-embed` indexing CLI uses the AWS Rust SDK `s3vectors`
+  client and follows AWS-style command/flag names (`put`, `query`,
+  `--vector-bucket-name`, `--index-name`, `--text-value`, `--text`,
+  `--k`, `--filter`) so it lines up with AWS's S3 Vectors tooling.
+
+VHS terminal recordings for the three public demo paths live in
+`demo/vhs/` and can be rendered from the repository root:
+
+```bash
+vhs demo/vhs/vector.tape
+vhs demo/vhs/tables.tape
+vhs demo/vhs/embed-cli.tape
+```
+
 ## Setup (once)
 
 ```bash

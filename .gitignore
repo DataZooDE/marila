@@ -25,6 +25,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Generated demo recordings
+demo/vhs/*.gif
+
 # Editor / IDE
 .idea/
 .vscode/

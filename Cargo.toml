@@ -14,12 +14,12 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.95"
 license = "Apache-2.0"
 publish = false
-repository = "https://github.com/datazoo/marila"
-homepage = "https://github.com/datazoo/marila"
-documentation = "https://github.com/datazoo/marila#readme"
+repository = "https://github.com/DataZooDE/marila"
+homepage = "https://github.com/DataZooDE/marila"
+documentation = "https://github.com/DataZooDE/marila#readme"
 
 [workspace.dependencies]
 # Internal crates

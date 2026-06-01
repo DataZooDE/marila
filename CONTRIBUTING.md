@@ -7,7 +7,7 @@ Python demo package under `demo/`.
 
 Prerequisites:
 
-- Rust 1.90.0 with `rustfmt` and `clippy`
+- Rust 1.95.0 with `rustfmt` and `clippy`
 - Docker Compose, for end-to-end table tests and demos
 - `protobuf-compiler`, `cmake`, and `pkg-config` on Linux build hosts
 

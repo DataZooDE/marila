@@ -14,6 +14,39 @@ marila is pre-1.0 software intended for local development, integration
 testing, demos, and compatibility experiments. It is not production
 hardened.
 
+## Demos First
+
+The demos are the fastest way to see what marila is for:
+
+- **Vectors:** agentic RAG over a local PDF corpus through the
+  S3 Vectors-compatible API.
+- **Tables:** NYC Yellow Taxi pivot analytics through the
+  S3 Tables-compatible API and Iceberg REST.
+- **Indexing CLI:** `marila-embed` parses local documents, chunks text,
+  embeds it, and writes vectors with AWS-aligned `put` and `query`
+  commands.
+
+The demo clients do not use private Rust hooks or in-process shortcuts.
+They are built with `boto3` / `botocore` and point normal AWS SDK clients
+at `endpoint_url=http://localhost:8080`:
+
+- `demo/vector/` uses a boto3 `s3vectors` client for vector buckets,
+  indexes, puts, and queries.
+- `demo/tables/` uses a boto3 `s3tables` client for the table control
+  plane, then DuckDB's Iceberg REST support for table data access.
+- `marila-embed` uses the AWS Rust SDK `s3vectors` client, so indexing
+  talks to marila exactly like any external AWS client would.
+
+Terminal recording scripts live in `demo/vhs/`:
+
+```bash
+vhs demo/vhs/vector.tape
+vhs demo/vhs/tables.tape
+vhs demo/vhs/embed-cli.tape
+```
+
+See [demo/README.md](demo/README.md) for full setup and walkthroughs.
+
 ## Features
 
 - `s3vectors`-style buckets, indexes, vector upsert/query/list/get/delete,
@@ -30,7 +63,7 @@ responses instead of silently pretending to work.
 
 ## Prerequisites
 
-- Rust 1.90.0. The pinned toolchain is in `rust-toolchain.toml`.
+- Rust 1.95.0. The pinned toolchain is in `rust-toolchain.toml`.
 - Docker Compose for the RustFS and Lakekeeper sidecars.
 - Linux build tools used by transitive dependencies:
 
@@ -82,15 +115,6 @@ RustFS test support, and AWS SDK clients.
 
 Real AWS contract tests are skipped by default. To opt in, configure AWS
 credentials and run with `MARILA_RUN_AWS_CONTRACTS=1`.
-
-## Demos
-
-The `demo/` directory contains Python TUIs for the two API surfaces:
-
-- `demo/vector/`: local document RAG through the S3 Vectors-compatible API
-- `demo/tables/`: NYC Yellow Taxi analytics through Iceberg tables
-
-See [demo/README.md](demo/README.md) for setup and usage.
 
 ## Security Model
 
