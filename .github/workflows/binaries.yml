@@ -1,0 +1,92 @@
+name: Binary Builds
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: marila-linux-x86_64
+            archive: marila-linux-x86_64.tar.gz
+            binaries: "marila marila-embed"
+          - os: macos-latest
+            artifact: marila-macos-arm64
+            archive: marila-macos-arm64.tar.gz
+            binaries: "marila marila-embed"
+          - os: windows-latest
+            artifact: marila-windows-x86_64
+            archive: marila-windows-x86_64.zip
+            binaries: "marila.exe marila-embed.exe"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            pkg-config \
+            protobuf-compiler
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config protobuf
+
+      - name: Install Windows build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install protoc --no-progress -y
+
+      - name: Build release binaries
+        run: cargo build --release -p marila -p marila-embed
+
+      - name: Stage Unix archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${{ matrix.artifact }}"
+          for bin in ${{ matrix.binaries }}; do
+            cp "target/release/${bin}" "dist/${{ matrix.artifact }}/"
+          done
+          cp README.md LICENSE "dist/${{ matrix.artifact }}/"
+          tar -C dist -czf "dist/${{ matrix.archive }}" "${{ matrix.artifact }}"
+
+      - name: Stage Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/${{ matrix.artifact }}"
+          foreach ($bin in "${{ matrix.binaries }}".Split(" ")) {
+            Copy-Item "target/release/$bin" "dist/${{ matrix.artifact }}/"
+          }
+          Copy-Item README.md, LICENSE "dist/${{ matrix.artifact }}/"
+          Compress-Archive `
+            -Path "dist/${{ matrix.artifact }}/*" `
+            -DestinationPath "dist/${{ matrix.archive }}" `
+            -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error

@@ -124,6 +124,13 @@ RustFS test support, and AWS SDK clients.
 Real AWS contract tests are skipped by default. To opt in, configure AWS
 credentials and run with `MARILA_RUN_AWS_CONTRACTS=1`.
 
+## Binary Builds
+
+GitHub Actions builds release archives for Linux x86_64, macOS arm64,
+and Windows x86_64 on version tags (`v*`) and manual workflow runs. Each
+archive contains the `marila` server binary, the `marila-embed` indexing
+CLI, `README.md`, and `LICENSE`.
+
 ## Security Model
 
 marila is local-first compatibility software:
