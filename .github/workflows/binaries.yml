@@ -12,6 +12,7 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.artifact }}
+    timeout-minutes: 15
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
